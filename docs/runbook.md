@@ -149,6 +149,83 @@ python -m runner_observability emit --endpoint <url> --token <token> --event-jso
 This runbook does not repeat the full schema/CLI reference; see
 `README.md`'s "Schema-v1 boundary" section for that.
 
+## Runner canary script (issue #6, using issue #7 HTTPS)
+
+After issue #7, the monitor can serve genuine HTTPS when it is started with
+`--tls-cert` and `--tls-key`. The canary script therefore requires an
+`https://` endpoint by default and relies on the Runner's normal Windows
+certificate trust store. It reads the bearer token from a file, never places
+the token in the PowerShell command line, and keeps its producer epoch and
+next sequence in `%LOCALAPPDATA%\RunnerObservability\canary-state.json`.
+
+Pull the repository on the Runner, then run these commands from its root:
+
+```powershell
+git pull --ff-only
+python --version
+$runnerId = "<runner-uuid>"
+$monitor = "https://<monitor-host>:8765"
+$tokenFile = "C:\secure\runner-observability-token.txt"
+
+.\scripts\Invoke-RunnerCanary.ps1 `
+    -Mode Smoke `
+    -Endpoint $monitor `
+    -RunnerId $runnerId `
+    -TokenPath $tokenFile
+```
+
+Expected result: one `[PASS]` line. If the Monitor Host is intentionally
+plain HTTP for a local-only test, add `-AllowInsecureHttp`; do not use that
+switch for the issue #6 HTTPS evidence.
+
+Run the remaining checks in this order:
+
+1. `Smoke`: confirms Runner-to-Monitor HTTPS, authentication, event ingest,
+   and an online dashboard projection.
+2. `Auth`: sends one heartbeat with an invalid token and confirms HTTP 401,
+   then sends a valid heartbeat and confirms the runner is online again.
+3. `OfflineRecovery`: sends a baseline heartbeat, sends nothing for the
+   default 601 seconds, confirms `offline` with
+   `offline_reason=heartbeat_timeout`, then sends a newer heartbeat and
+   confirms recovery to `online`. Stop every other heartbeat producer for
+   this Runner during the wait; otherwise another producer can keep it alive.
+4. `NetworkFailure`: stop the Monitor Host first, then run the command below.
+   The expected result is `[PASS]` because the endpoint failure is observed
+   without printing a token. Start the Monitor Host again before continuing.
+
+```powershell
+.\scripts\Invoke-RunnerCanary.ps1 `
+    -Mode Auth `
+    -Endpoint $monitor `
+    -RunnerId $runnerId `
+    -TokenPath $tokenFile
+
+.\scripts\Invoke-RunnerCanary.ps1 `
+    -Mode OfflineRecovery `
+    -Endpoint $monitor `
+    -RunnerId $runnerId `
+    -TokenPath $tokenFile
+
+.\scripts\Invoke-RunnerCanary.ps1 `
+    -Mode NetworkFailure `
+    -Endpoint $monitor `
+    -RunnerId $runnerId `
+    -TokenPath $tokenFile
+```
+
+For a fast, non-destructive connectivity failure check without stopping the
+Monitor Host, point `-FailureEndpoint` at an unused local HTTPS port, for
+example `https://127.0.0.1:1`. This checks the canary's failure observation
+path; the existing Python agent tests and the manual `emit` procedure still
+cover the agent's fail-open delivery behavior. If you intentionally use an
+HTTP failure endpoint, add `-AllowInsecureHttp` explicitly.
+
+Use the default `runner-canary` producer id. Do not run this script with the
+same `-ProducerId` as a live agent at the same time, because producer
+sequence ordering is intentionally monotonic per producer epoch. The state
+file must not contain a token and should stay local to the Runner; do not
+copy one Runner's state file to another Runner.
+
 ## Update (upgrading an existing install)
 
 ```powershell
