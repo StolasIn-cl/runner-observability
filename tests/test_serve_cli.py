@@ -185,6 +185,48 @@ class ServeCliTlsArgumentTests(unittest.TestCase):
         self.assertIsNone(captured_kwargs.get("tls_cert_path"))
         self.assertIsNone(captured_kwargs.get("tls_key_path"))
 
+    def test_missing_token_file_fails_before_creating_database(self) -> None:
+        missing_token = Path(self._tmp.name) / "missing-token.txt"
+        captured = io.StringIO()
+
+        with contextlib.redirect_stderr(captured):
+            exit_code = cli_module.main(
+                [
+                    "serve",
+                    "--token-file",
+                    str(missing_token),
+                    "--database",
+                    self.database,
+                ]
+            )
+
+        output = captured.getvalue()
+        self.assertEqual(exit_code, 2)
+        self.assertIn("auth_credential_file_missing", output)
+        self.assertNotIn(str(missing_token), output)
+        self.assertFalse(Path(self.database).exists())
+
+    def test_token_and_token_file_are_mutually_exclusive(self) -> None:
+        token_path = Path(self._tmp.name) / "token.txt"
+        token_path.write_text("test-token\n", encoding="utf-8")
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                cli_module.main(
+                    [
+                        "serve",
+                        "--token",
+                        "legacy-token",
+                        "--token-file",
+                        str(token_path),
+                        "--database",
+                        self.database,
+                    ]
+                )
+
+        self.assertEqual(error.exception.code, 2)
+        self.assertFalse(Path(self.database).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

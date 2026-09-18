@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from pathlib import Path
 import sys
 from typing import Any
 
 from .agent import main as emit_main
+from .credentials import CredentialFileError, read_token_file
 from .server import REASON_TLS_PARTIAL_CONFIGURATION, TlsConfigurationError, create_server
 from .store import Store
 
@@ -17,7 +19,9 @@ def main(argv: Sequence[str] | None = None, **emit_options: Any) -> int:
     parser = argparse.ArgumentParser(prog="runner-observability")
     subcommands = parser.add_subparsers(dest="command", required=True)
     serve = subcommands.add_parser("serve", help="run the local telemetry monitor")
-    serve.add_argument("--token", required=True)
+    token_arguments = serve.add_mutually_exclusive_group()
+    token_arguments.add_argument("--token", default=None)
+    token_arguments.add_argument("--token-file", default=None)
     serve.add_argument("--database", default="runner-observability.sqlite")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
@@ -49,6 +53,17 @@ def main(argv: Sequence[str] | None = None, **emit_options: Any) -> int:
             ],
             **emit_options,
         )
+    if arguments.token is None and arguments.token_file is None:
+        print("serve failed reason=auth_credential_missing", file=sys.stderr)
+        return 2
+    if arguments.token_file is None:
+        bearer_token = arguments.token
+    else:
+        try:
+            bearer_token = read_token_file(Path(arguments.token_file))
+        except CredentialFileError as error:
+            print(f"serve failed reason={error.reason}", file=sys.stderr)
+            return 2
     # Check the --tls-cert/--tls-key pairing before touching the database
     # at all: create_server() re-validates this (it is the single source
     # of truth for the check), but a mistyped/partial TLS configuration is
@@ -61,7 +76,7 @@ def main(argv: Sequence[str] | None = None, **emit_options: Any) -> int:
     try:
         server = create_server(
             store,
-            arguments.token,
+            bearer_token,
             host=arguments.host,
             port=arguments.port,
             tls_cert_path=arguments.tls_cert,
