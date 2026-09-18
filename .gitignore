@@ -1,2 +1,6 @@
 __pycache__/
 *.py[cod]
+
+# Generated per-run local Verification Gate evidence (issue #5); regenerate
+# with scripts/Invoke-VerificationGate.ps1 rather than tracking a stale copy.
+gate-report.md
