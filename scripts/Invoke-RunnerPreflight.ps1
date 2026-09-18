@@ -22,8 +22,19 @@
     table and first-triage guidance.
 
 .PARAMETER TlsCertPath
-    Path to a TLS certificate file to confirm is present and non-empty.
-    Its contents are never read or printed by this check.
+    Path to a TLS certificate file to confirm is present and non-empty. Its
+    contents are never read or printed by this check. Without -TlsKeyPath,
+    this only proves the file exists -- not that it is a valid, loadable
+    certificate, and not that it will actually be used for encryption.
+
+.PARAMETER TlsKeyPath
+    Optional. Path to the private key that pairs with -TlsCertPath. When
+    supplied, the TLS certificate check is strengthened: it attempts to
+    load both files into a real SSLContext (the same call the monitor's
+    `serve --tls-cert/--tls-key` makes to actually turn on HTTPS), proving
+    the certificate is loadable and the key actually matches it -- without
+    starting a real server or opening a socket. Its contents are never
+    read or printed by this check beyond that pass/fail outcome.
 
 .PARAMETER AuthTokenPath
     Path to an auth credential/token file to confirm is present and
@@ -39,11 +50,12 @@
     unconfigured.
 
 .EXAMPLE
-    ./scripts/Invoke-RunnerPreflight.ps1 -TlsCertPath "C:\path\to\cert.pem" -AuthTokenPath "C:\path\to\token.txt"
+    ./scripts/Invoke-RunnerPreflight.ps1 -TlsCertPath "C:\path\to\cert.pem" -TlsKeyPath "C:\path\to\key.pem" -AuthTokenPath "C:\path\to\token.txt"
 #>
 [CmdletBinding()]
 param(
     [string]$TlsCertPath = "",
+    [string]$TlsKeyPath = "",
     [string]$AuthTokenPath = "",
     [ValidateSet("Pass", "Fail")]
     [string]$FirewallResult = "",
@@ -70,6 +82,9 @@ Write-Host "This run never contacts a real Monitor Host, TLS store, or firewall 
 $pythonArgs = @("-m", "runner_observability.deploy", "preflight")
 if (-not [string]::IsNullOrWhiteSpace($TlsCertPath)) {
     $pythonArgs += @("--tls-cert-path", $TlsCertPath)
+}
+if (-not [string]::IsNullOrWhiteSpace($TlsKeyPath)) {
+    $pythonArgs += @("--tls-key-path", $TlsKeyPath)
 }
 if (-not [string]::IsNullOrWhiteSpace($AuthTokenPath)) {
     $pythonArgs += @("--auth-token-path", $AuthTokenPath)

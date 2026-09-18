@@ -22,6 +22,10 @@ from runner_observability import deploy
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+TLS_FIXTURES = Path(__file__).parent / "fixtures" / "tls"
+VALID_TLS_CERT = TLS_FIXTURES / "server-cert.pem"
+VALID_TLS_KEY = TLS_FIXTURES / "server-key.pem"
+MISMATCHED_TLS_KEY = TLS_FIXTURES / "other-key.pem"
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +121,70 @@ class TlsCertificateCheckTests(unittest.TestCase):
         cert.write_text(secret_looking_content, encoding="utf-8")
         result = deploy.check_tls_certificate_file(cert)
         self.assertNotIn("super-secret-material", repr(result))
+
+    # -- Strengthened check (issue #7 PERS-07): when a key_path is also
+    # supplied, this closes the honesty gap where a present-but-garbage or
+    # non-matching cert file used to pass. It attempts a real
+    # ssl.SSLContext().load_cert_chain() -- the exact call server.py's
+    # create_server() makes -- without ever starting a server or opening a
+    # socket. Omitting key_path (the default) must behave exactly as the
+    # tests above already prove: presence-only, unchanged.
+
+    def test_a_valid_matching_cert_and_key_pair_passes_the_strengthened_check(self) -> None:
+        result = deploy.check_tls_certificate_file(VALID_TLS_CERT, VALID_TLS_KEY)
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason, "")
+
+    def test_a_mismatched_key_fails_the_strengthened_check_with_a_stable_reason(self) -> None:
+        result = deploy.check_tls_certificate_file(VALID_TLS_CERT, MISMATCHED_TLS_KEY)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, deploy.REASON_TLS_CERTIFICATE_INVALID)
+
+    def test_malformed_cert_content_fails_the_strengthened_check_with_a_stable_reason(self) -> None:
+        malformed = self.base / "malformed-cert.pem"
+        malformed.write_text("this is not a certificate\n", encoding="utf-8")
+        result = deploy.check_tls_certificate_file(malformed, VALID_TLS_KEY)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, deploy.REASON_TLS_CERTIFICATE_INVALID)
+
+    def test_a_missing_key_file_fails_the_strengthened_check_with_a_stable_reason(self) -> None:
+        # Reviewer fix-round-1 finding (Important #2): a missing/empty KEY
+        # file must report tls_certificate_invalid, the same reason the
+        # docstring above promises and the same reason server.py's
+        # create_server() reports for this identical situation -- never the
+        # cert-missing reason, which would point an operator at the wrong
+        # file entirely.
+        result = deploy.check_tls_certificate_file(VALID_TLS_CERT, self.base / "does-not-exist-key.pem")
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, deploy.REASON_TLS_CERTIFICATE_INVALID)
+
+    def test_an_empty_key_file_also_fails_with_the_certificate_invalid_reason(self) -> None:
+        empty_key = self.base / "empty-key.pem"
+        empty_key.write_text("", encoding="utf-8")
+        result = deploy.check_tls_certificate_file(VALID_TLS_CERT, empty_key)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, deploy.REASON_TLS_CERTIFICATE_INVALID)
+
+    def test_the_strengthened_check_never_leaks_the_configured_paths_or_content(self) -> None:
+        malformed = self.base / "malformed-cert.pem"
+        secret_looking_content = "-----BEGIN PRIVATE KEY-----\nsuper-secret-material-marker\n"
+        malformed.write_text(secret_looking_content, encoding="utf-8")
+        result = deploy.check_tls_certificate_file(malformed, VALID_TLS_KEY)
+        serialized = repr(result)
+        self.assertNotIn("super-secret-material-marker", serialized)
+        self.assertNotIn(str(malformed), serialized)
+        self.assertNotIn(str(self.base), serialized)
+
+    def test_omitting_key_path_keeps_the_original_presence_only_check_unchanged(self) -> None:
+        # A cert file that would fail the strengthened check (it is not a
+        # real loadable certificate) must still pass the original,
+        # presence-only check when no key_path is supplied at all -- the
+        # strengthening is strictly additive/opt-in, never a behavior
+        # change for existing callers.
+        not_a_real_cert = self.base / "not-a-real-cert.pem"
+        not_a_real_cert.write_text("just needs to be present and non-empty", encoding="utf-8")
+        result = deploy.check_tls_certificate_file(not_a_real_cert)
+        self.assertTrue(result.passed)
 
 
 class AuthCredentialCheckTests(unittest.TestCase):
@@ -267,6 +335,29 @@ class RunPreflightAggregationTests(unittest.TestCase):
         )
         self.assertFalse(report.passed)
         self.assertEqual(len(report.failure_reasons), 5)
+
+    def test_run_preflight_accepts_an_optional_tls_key_path_and_strengthens_the_check(self) -> None:
+        report = deploy.run_preflight(
+            python_version=(3, 11),
+            tls_cert_path=VALID_TLS_CERT,
+            tls_key_path=MISMATCHED_TLS_KEY,
+            auth_token_path=self.token,
+            firewall_probe=lambda: True,
+            host_reachable_probe=lambda: True,
+        )
+        self.assertFalse(report.passed)
+        self.assertIn(deploy.REASON_TLS_CERTIFICATE_INVALID, report.failure_reasons)
+        self.assertEqual(len(report.checks), 5)
+
+    def test_run_preflight_without_tls_key_path_is_unaffected(self) -> None:
+        report = deploy.run_preflight(
+            python_version=(3, 11),
+            tls_cert_path=self.cert,
+            auth_token_path=self.token,
+            firewall_probe=lambda: True,
+            host_reachable_probe=lambda: True,
+        )
+        self.assertTrue(report.passed)
 
     def test_report_never_contains_the_configured_absolute_paths(self) -> None:
         report = deploy.run_preflight(
@@ -670,6 +761,43 @@ class DeployCliTests(unittest.TestCase):
         self.assertNotIn(str(self.base), combined)
         self.assertIsInstance(exit_code, int)
 
+    def test_preflight_subcommand_accepts_tls_key_path_and_strengthens_the_check(self) -> None:
+        printed: list[str] = []
+        exit_code = deploy.main(
+            [
+                "preflight",
+                "--tls-cert-path",
+                str(VALID_TLS_CERT),
+                "--tls-key-path",
+                str(MISMATCHED_TLS_KEY),
+            ],
+            printer=printed.append,
+        )
+        combined = "\n".join(printed)
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn(deploy.REASON_TLS_CERTIFICATE_INVALID, combined)
+        self.assertNotIn(str(VALID_TLS_CERT), combined)
+        self.assertNotIn(str(MISMATCHED_TLS_KEY), combined)
+
+    def test_preflight_subcommand_with_a_valid_matching_pair_passes_the_tls_check(self) -> None:
+        printed: list[str] = []
+        deploy.main(
+            [
+                "preflight",
+                "--tls-cert-path",
+                str(VALID_TLS_CERT),
+                "--tls-key-path",
+                str(VALID_TLS_KEY),
+                "--firewall-result",
+                "pass",
+                "--host-reachable-result",
+                "pass",
+            ],
+            printer=printed.append,
+        )
+        combined = "\n".join(printed)
+        self.assertIn("tls_certificate: PASS", combined)
+
     def test_preflight_result_flags_let_an_operator_pass_through_a_precomputed_outcome(self) -> None:
         printed: list[str] = []
         exit_code = deploy.main(
@@ -962,6 +1090,22 @@ class RunbookShapeTests(unittest.TestCase):
 
     def test_runbook_documents_the_rollback_target_missing_reason(self) -> None:
         self.assertIn("rollback_target_missing", self.text)
+
+    def test_runbook_documents_the_strengthened_tls_check_and_its_new_flag(self) -> None:
+        # Issue #7 PERS-07: the runbook must no longer let a reader believe
+        # "cert file present" already means "this will actually be used for
+        # encryption" -- it must name the optional -TlsKeyPath flag and
+        # explain that supplying it makes the check load a real SSLContext.
+        self.assertIn("-TlsKeyPath", self.text)
+        lowered = self.text.lower()
+        self.assertIn("sslcontext", lowered)
+        self.assertIn(deploy.REASON_TLS_CERTIFICATE_INVALID, self.text)
+
+    def test_runbook_documents_the_serve_command_tls_flags(self) -> None:
+        # Issue #7 PERS-07: the serve example must show how to actually turn
+        # on HTTPS, not just how to run the preflight file-presence check.
+        self.assertIn("--tls-cert", self.text)
+        self.assertIn("--tls-key", self.text)
 
 
 class CanaryEvidenceTemplateShapeTests(unittest.TestCase):

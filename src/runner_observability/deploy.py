@@ -50,6 +50,7 @@ import argparse
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -92,6 +93,7 @@ def validate_revision(revision: object) -> str:
 
 REASON_UNSUPPORTED_PYTHON_VERSION = "unsupported_python_version"
 REASON_TLS_CERT_FILE_MISSING = "tls_certificate_file_missing"
+REASON_TLS_CERTIFICATE_INVALID = "tls_certificate_invalid"
 REASON_AUTH_CREDENTIAL_MISSING = "auth_credential_file_missing"
 REASON_FIREWALL_CHECK_NOT_CONFIGURED = "firewall_check_not_configured"
 REASON_FIREWALL_PORT_BLOCKED = "firewall_port_blocked"
@@ -146,17 +148,55 @@ def check_python_version(*, actual: tuple[int, int] | None = None, minimum: tupl
     return CheckResult("python_version", passed, "" if passed else REASON_UNSUPPORTED_PYTHON_VERSION)
 
 
-def check_tls_certificate_file(cert_path: Path | str | None) -> CheckResult:
-    """Confirm a TLS certificate file is configured and present -- contents are never read.
+def check_tls_certificate_file(cert_path: Path | str | None, key_path: Path | str | None = None) -> CheckResult:
+    """Confirm a TLS certificate file is configured and present -- contents are never read directly.
 
-    This proves only that a cert *is configured*, not that it is *trusted*
-    by a real TLS handshake against a real host -- that is issue #6's job.
+    With ``key_path`` omitted (the default), this proves only that a cert
+    *is configured and present*, exactly as before -- it does not by
+    itself prove the file is a valid certificate or that it would ever
+    actually be used for encryption.
+
+    When ``key_path`` is also supplied, this check is strengthened: it
+    additionally attempts to load the pair into a real
+    ``ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)`` via ``load_cert_chain`` --
+    the exact call ``server.create_server()`` makes when it wraps the
+    Monitor Host's listening socket for HTTPS (issue #7 PERS-07). This
+    requires no real server, no socket, and no network activity, but does
+    prove the configured file is a loadable certificate whose private key
+    actually matches it, closing the previous "file present on disk" ==
+    "will actually be used for encryption" gap. It still never proves the
+    certificate is *trusted* by a real client against a real host -- that
+    remains issue #6's job. Load failures (missing/unreadable key file,
+    malformed PEM content, a mismatched key) are reported only as the
+    stable ``tls_certificate_invalid`` reason -- never the configured path
+    or the underlying ``ssl``/``OSError`` exception text.
     """
     if cert_path is None:
         return CheckResult("tls_certificate", False, REASON_TLS_CERT_FILE_MISSING)
     path = Path(cert_path)
     passed = path.is_file() and path.stat().st_size > 0
-    return CheckResult("tls_certificate", passed, "" if passed else REASON_TLS_CERT_FILE_MISSING)
+    if not passed:
+        return CheckResult("tls_certificate", False, REASON_TLS_CERT_FILE_MISSING)
+    if key_path is None:
+        return CheckResult("tls_certificate", True, "")
+    # Every load failure from here on -- a missing/unreadable key file, an
+    # empty key file, malformed PEM content, or a mismatched key -- is
+    # reported as the single tls_certificate_invalid reason, matching this
+    # function's own docstring and server.create_server()'s handling of
+    # the identical situation. A separate presence pre-check for key_path
+    # used to (incorrectly) report the cert-missing reason for a missing
+    # *key* file, which contradicted both the docstring above and the
+    # runbook, and pointed an operator at the wrong file. Let
+    # load_cert_chain itself be the single source of truth instead.
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        # Mirror server.create_server()'s explicit floor so this check
+        # predicts the same outcome serve would produce.
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(certfile=str(path), keyfile=str(key_path))
+    except (OSError, ssl.SSLError):
+        return CheckResult("tls_certificate", False, REASON_TLS_CERTIFICATE_INVALID)
+    return CheckResult("tls_certificate", True, "")
 
 
 def check_auth_credential_file(token_path: Path | str | None) -> CheckResult:
@@ -219,16 +259,23 @@ def run_preflight(
     python_version: tuple[int, int] | None = None,
     minimum_python_version: tuple[int, int] = (3, 11),
     tls_cert_path: Path | str | None = None,
+    tls_key_path: Path | str | None = None,
     auth_token_path: Path | str | None = None,
     firewall_probe: BoolProbe | None = None,
     host_reachable_probe: BoolProbe | None = None,
     max_host_attempts: int = 3,
     sleeper: Callable[[float], None] = lambda _seconds: None,
 ) -> PreflightReport:
-    """Run the full preflight battery and collect every failure reason, not just the first."""
+    """Run the full preflight battery and collect every failure reason, not just the first.
+
+    ``tls_key_path`` is optional; supplying it strengthens the TLS
+    certificate check from file-presence-only to a real, local
+    ``SSLContext`` load (see ``check_tls_certificate_file``). Omitting it
+    keeps the original, weaker check -- this parameter is purely additive.
+    """
     checks = (
         check_python_version(actual=python_version, minimum=minimum_python_version),
-        check_tls_certificate_file(tls_cert_path),
+        check_tls_certificate_file(tls_cert_path, tls_key_path),
         check_auth_credential_file(auth_token_path),
         check_firewall_port(firewall_probe),
         check_host_reachable(host_reachable_probe, max_attempts=max_host_attempts, sleeper=sleeper),
@@ -511,6 +558,7 @@ def main(
 
     preflight_parser = subcommands.add_parser("preflight", help="run the local preflight check battery")
     preflight_parser.add_argument("--tls-cert-path", default=None)
+    preflight_parser.add_argument("--tls-key-path", default=None)
     preflight_parser.add_argument("--auth-token-path", default=None)
     preflight_parser.add_argument("--firewall-result", choices=("pass", "fail"), default=None)
     preflight_parser.add_argument("--host-reachable-result", choices=("pass", "fail"), default=None)
@@ -521,6 +569,7 @@ def main(
         sub.add_argument("--source", required=True)
         sub.add_argument("--install-root", required=True)
         sub.add_argument("--tls-cert-path", default=None)
+        sub.add_argument("--tls-key-path", default=None)
         sub.add_argument("--auth-token-path", default=None)
         sub.add_argument("--firewall-result", choices=("pass", "fail"), default=None)
         sub.add_argument("--host-reachable-result", choices=("pass", "fail"), default=None)
@@ -536,6 +585,7 @@ def main(
         try:
             report = run_preflight(
                 tls_cert_path=args.tls_cert_path,
+                tls_key_path=args.tls_key_path,
                 auth_token_path=args.auth_token_path,
                 firewall_probe=effective_firewall_probe,
                 host_reachable_probe=effective_host_probe,
@@ -554,6 +604,7 @@ def main(
     layout = ReleaseLayout(Path(args.install_root))
     preflight_report = run_preflight(
         tls_cert_path=args.tls_cert_path,
+        tls_key_path=args.tls_key_path,
         auth_token_path=args.auth_token_path,
         firewall_probe=effective_firewall_probe,
         host_reachable_probe=effective_host_probe,

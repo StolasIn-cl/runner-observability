@@ -82,6 +82,7 @@ require elevation on their own.
     -Source "C:\path\to\built\1.0.0" `
     -InstallRoot "C:\runner-observability" `
     -TlsCertPath "C:\path\to\tls-cert.pem" `
+    -TlsKeyPath "C:\path\to\tls-key.pem" `
     -AuthTokenPath "C:\path\to\auth-token.txt" `
     -FirewallResult Pass `
     -HostReachableResult Pass
@@ -96,7 +97,10 @@ point at real files that already exist locally; `-FirewallResult` and
 `-HostReachableResult` must be the outcome of a real check an operator (or
 an issue #6 process) already performed out of band for the actual target
 environment -- these two flags never trigger a real check themselves, they
-only pass through a result you already have.
+only pass through a result you already have. `-TlsKeyPath` is optional but
+strongly recommended (see "Preflight checks" below): without it, the TLS
+check only proves a cert *file* is present, not that it is a real,
+loadable certificate that will actually be used for encryption.
 
 What this does:
 
@@ -121,8 +125,20 @@ Starting the monitor itself (once you trust the installed revision) uses
 the same CLI surface documented in `README.md`:
 
 ```powershell
-python -m runner_observability serve --token <token> --database <path>
+python -m runner_observability serve --token <token> --database <path> `
+    --tls-cert <path\to\tls-cert.pem> --tls-key <path\to\tls-key.pem>
 ```
+
+`--tls-cert`/`--tls-key` are optional but must be given as a pair --
+supplying only one is a controlled, redacted error and the monitor never
+starts. Omitting both (as in `docs/canary-evidence-template.md`-free local
+testing and the Local Verification Gate) keeps the monitor on plain HTTP,
+exactly as before this ticket. When both are given, the monitor wraps its
+listening socket with a real `ssl.SSLContext` and serves genuine HTTPS --
+this is the actual encryption boundary; the preflight "TLS certificate"
+check (see "Preflight checks" below, even in its strengthened form) only
+ever predicts whether this step *will* succeed, it never substitutes for
+it.
 
 or, to send one event (the fail-open agent path):
 
@@ -141,6 +157,7 @@ This runbook does not repeat the full schema/CLI reference; see
     -Source "C:\path\to\built\1.1.0" `
     -InstallRoot "C:\runner-observability" `
     -TlsCertPath "C:\path\to\tls-cert.pem" `
+    -TlsKeyPath "C:\path\to\tls-key.pem" `
     -AuthTokenPath "C:\path\to\auth-token.txt" `
     -FirewallResult Pass `
     -HostReachableResult Pass
@@ -198,7 +215,7 @@ secret value:
 | Check | What it confirms | Failure diagnostic |
 | --- | --- | --- |
 | Python version | The local Python interpreter meets the minimum supported version (3.11) | `unsupported_python_version` |
-| TLS certificate | A certificate file is configured and present on disk (its contents are never read) | `tls_certificate_file_missing` |
+| TLS certificate | Without `-TlsKeyPath`: only that a certificate file is configured and present on disk (its contents are never read) -- this does **not** prove the file is a valid certificate or that it will ever actually be used for encryption. With `-TlsKeyPath` also supplied, this check is strengthened: it attempts to load the pair into a real `ssl.SSLContext` (`load_cert_chain`), the exact call the monitor's `serve --tls-cert/--tls-key` makes to actually turn on HTTPS -- proving the file is a loadable certificate whose key really matches it, without ever starting a server or opening a socket | `tls_certificate_file_missing` (no cert configured, or the file is missing/empty), or, only when `-TlsKeyPath` was supplied, `tls_certificate_invalid` (the pair failed to load: missing/unreadable key, malformed content, or a mismatched key) |
 | Auth credential | A credential/token file is configured and present on disk (its contents are never read) | `auth_credential_file_missing` |
 | Firewall | The ingest port is reachable through the local firewall configuration, via an operator-supplied check | `firewall_check_not_configured` (no check wired up) or `firewall_port_blocked` (checked and blocked) |
 | Host reachability | The target Monitor Host responds, retried up to 3 times with a short pause between attempts -- never retried indefinitely | `host_reachability_check_not_configured` (no check wired up) or `monitor_host_unreachable` (retried and still unreachable) |
@@ -220,6 +237,7 @@ the "Scope" section above.
 ```powershell
 ./scripts/Invoke-RunnerPreflight.ps1 `
     -TlsCertPath "C:\path\to\tls-cert.pem" `
+    -TlsKeyPath "C:\path\to\tls-key.pem" `
     -AuthTokenPath "C:\path\to\auth-token.txt" `
     -FirewallResult Pass `
     -HostReachableResult Pass
@@ -235,6 +253,7 @@ raw exception message, stack trace, absolute path, or token value.
 | --- | --- | --- |
 | `unsupported_python_version` | The host's Python interpreter is older than 3.11 | Install/upgrade Python 3.11+ on the target host and re-run |
 | `tls_certificate_file_missing` | No cert file configured, or the configured path does not exist / is empty | Confirm `-TlsCertPath` points at a real, non-empty file. Issuing/trusting the certificate itself is issue #6's job, not this script's |
+| `tls_certificate_invalid` | `-TlsKeyPath` was also supplied, and the cert/key pair could not be loaded into a real `SSLContext` -- the key file is missing/empty, the cert content is malformed, or the key does not match the certificate | Confirm `-TlsCertPath`/`-TlsKeyPath` point at a real, matching PEM certificate and private key pair (the same files you intend to pass to `serve --tls-cert`/`--tls-key`). This check never reports the file contents or which specific rule failed |
 | `auth_credential_file_missing` | No credential file configured, or the configured path does not exist / is empty | Confirm `-AuthTokenPath` points at a real, non-empty file. This check never reads or reports the token's value |
 | `firewall_check_not_configured` | `-FirewallResult` was omitted -- this check is **required**, not optional, for install/update to proceed | Determine the real firewall outcome for the target environment out of band and pass `-FirewallResult Pass` or `-FirewallResult Fail` explicitly. There is no way to skip this check |
 | `firewall_port_blocked` | A real firewall check was wired up and reported the port is blocked | Open the ingest port for the Monitor Host per your organization's firewall change process (issue #6) |

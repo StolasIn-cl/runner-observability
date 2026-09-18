@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import socket
+import ssl
 from threading import RLock
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -24,6 +25,23 @@ MAX_REJECTED_BODY_DRAIN_BYTES = MAX_PAYLOAD_BYTES + 1
 REQUEST_READ_TIMEOUT_SECONDS = 1.0
 STATIC_DIR = Path(__file__).parent / "static"
 
+# Stable, redacted TLS configuration reason codes (issue #7 PERS-07),
+# following the same convention as ``deploy.py``'s ``REASON_*`` constants
+# and ``contracts.ValidationError``: a caller may branch on ``.reason``,
+# but the exception's string form is never anything except this code --
+# never a configured path, never certificate/key contents, never the
+# underlying ``ssl``/``OSError`` exception text.
+REASON_TLS_PARTIAL_CONFIGURATION = "tls_partial_configuration"
+REASON_TLS_CERTIFICATE_LOAD_FAILED = "tls_certificate_load_failed"
+
+
+class TlsConfigurationError(ValueError):
+    """A TLS certificate/key configuration failure with a safe, stable reason code only."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
 
 def create_server(
     store: Store,
@@ -33,14 +51,58 @@ def create_server(
     port: int = 0,
     clock: Clock | None = None,
     diagnostic: Diagnostic | None = None,
+    tls_cert_path: Path | str | None = None,
+    tls_key_path: Path | str | None = None,
 ) -> ThreadingHTTPServer:
     """Create an in-process monitor server without starting its serving loop.
 
     The caller owns both the returned server and the Store, which keeps tests and
     command-line lifecycle handling explicit.
+
+    ``tls_cert_path``/``tls_key_path`` are optional. When both are provided,
+    the server's listening socket is wrapped with a real
+    ``ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)`` (stdlib ``ssl`` only, no
+    third-party dependency) so the monitor actually serves HTTPS instead of
+    plain HTTP -- closing the gap where the preflight "TLS certificate"
+    check only ever proved a cert *file* existed. Providing only one of the
+    pair is a controlled ``TlsConfigurationError`` (reason
+    ``tls_partial_configuration``) raised before any socket is bound --
+    never a half-started server. A certificate/key that cannot be loaded
+    (missing file, malformed content, a mismatched key) is also a
+    controlled ``TlsConfigurationError`` (reason
+    ``tls_certificate_load_failed``); the configured path, file contents,
+    and the underlying ``ssl``/``OSError`` exception text are never
+    included in the raised error. Omitting both (the default) keeps
+    today's plain-HTTP behavior completely unchanged.
     """
     if not bearer_token:
         raise ValueError("bearer_token must not be empty")
+    # Presence is decided by "was a value supplied at all" (``is not None``),
+    # never by truthiness: an explicitly empty string ("", e.g. from an
+    # unset PowerShell variable expanding to a blank argument) is a
+    # configured-but-invalid value, not the same as "omitted". Treating ""
+    # as falsy here would let two blank strings silently skip both the
+    # pairing check and the TLS-activation gate below and fall through to
+    # plain HTTP with no error and no diagnostic -- the worst possible
+    # failure mode for a security feature. A blank value is instead let
+    # through to the real ``load_cert_chain`` call below, which rejects it
+    # the same stable, non-leaking way it rejects any other invalid path.
+    if (tls_cert_path is None) != (tls_key_path is None):
+        raise TlsConfigurationError(REASON_TLS_PARTIAL_CONFIGURATION)
+    tls_context: ssl.SSLContext | None = None
+    if tls_cert_path is not None and tls_key_path is not None:
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        # Pin the floor explicitly rather than trusting whatever the
+        # local OpenSSL build's own default happens to be today.
+        tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        try:
+            tls_context.load_cert_chain(certfile=str(tls_cert_path), keyfile=str(tls_key_path))
+        except (OSError, ssl.SSLError):
+            # Never chain/re-raise the original exception: it may carry the
+            # configured absolute path or a PEM-parsing snippet of the file
+            # content in its message, which would break the same redaction
+            # guarantee ``deploy.py`` and ``contracts.py`` already enforce.
+            raise TlsConfigurationError(REASON_TLS_CERTIFICATE_LOAD_FAILED) from None
     request_clock = clock or (lambda: datetime.now(timezone.utc))
     report = diagnostic or (lambda _message: None)
     store_lock = RLock()
@@ -218,6 +280,37 @@ def create_server(
 
     server = ThreadingHTTPServer((host, port), MonitorHandler)
     server.daemon_threads = True
+
+    def _handle_error(_request: object, _client_address: object) -> None:
+        # socketserver's default handle_error() prints a raw traceback
+        # (including this process's absolute paths) to stderr for any
+        # exception that escapes a handler thread uncaught -- most notably
+        # a client that speaks neither valid TLS nor valid HTTP against a
+        # TLS-wrapped listener (see
+        # tests/test_tls.py::test_a_hostile_plaintext_client_never_leaks_a_raw_traceback_to_stderr).
+        # Report a single stable, redacted reason instead, matching every
+        # other rejection path in this module; never re-raise or print the
+        # original exception.
+        report("http_connection_error")
+
+    server.handle_error = _handle_error  # type: ignore[method-assign]
+    if tls_context is not None:
+        # do_handshake_on_connect=False is required, not optional: the
+        # default (True) performs the full TLS handshake synchronously
+        # inside SSLSocket.accept(), which runs on the single main
+        # serve_forever() accept loop -- not a per-connection worker
+        # thread -- with no timeout at all. A client that opens a TCP
+        # connection and never sends a ClientHello (idle/slow/hostile)
+        # would then block accept() indefinitely, starving every other
+        # runner's ingest requests. With handshake deferred, the
+        # handshake instead happens lazily on first read/write inside the
+        # per-connection handler thread, where MonitorHandler.setup()
+        # already applies REQUEST_READ_TIMEOUT_SECONDS to the connection
+        # -- http.server's own handle_one_request() already catches the
+        # resulting socket.timeout the same way it does for a slow plain-
+        # HTTP client, so no other code path needed to change. See
+        # tests/test_tls.py::test_an_idle_connection_that_never_sends_a_handshake_does_not_block_other_clients.
+        server.socket = tls_context.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
     return server
 
 

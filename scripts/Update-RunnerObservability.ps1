@@ -35,6 +35,9 @@
 .PARAMETER TlsCertPath
     See Invoke-RunnerPreflight.ps1.
 
+.PARAMETER TlsKeyPath
+    See Invoke-RunnerPreflight.ps1.
+
 .PARAMETER AuthTokenPath
     See Invoke-RunnerPreflight.ps1.
 
@@ -60,6 +63,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$InstallRoot,
     [string]$TlsCertPath = "",
+    [string]$TlsKeyPath = "",
     [string]$AuthTokenPath = "",
     [ValidateSet("Pass", "Fail")]
     [string]$FirewallResult = "",
@@ -92,6 +96,9 @@ $pythonArgs = @(
 )
 if (-not [string]::IsNullOrWhiteSpace($TlsCertPath)) {
     $pythonArgs += @("--tls-cert-path", $TlsCertPath)
+}
+if (-not [string]::IsNullOrWhiteSpace($TlsKeyPath)) {
+    $pythonArgs += @("--tls-key-path", $TlsKeyPath)
 }
 if (-not [string]::IsNullOrWhiteSpace($AuthTokenPath)) {
     $pythonArgs += @("--auth-token-path", $AuthTokenPath)

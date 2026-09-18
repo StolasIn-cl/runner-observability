@@ -1,0 +1,19 @@
+These files are throwaway, locally-generated, self-signed test fixtures
+for tests/test_tls.py and tests/test_deployment_docs.py (issue #7
+PERS-07). They are not real credentials, were never used for anything
+other than these tests, and are intentionally committed in plaintext.
+
+server-cert.pem / server-key.pem -- a matching self-signed certificate/key
+pair (CN=localhost, SAN DNS:localhost + IP:127.0.0.1), generated once with
+the local `openssl` CLI (the same approach CPython's own test suite uses
+for its SSL fixtures), valid until 2036.
+
+other-key.pem -- a second, unrelated private key that does NOT match
+server-cert.pem, used only to exercise the "mismatched key" failure path.
+
+Regenerate if ever needed with:
+  openssl req -x509 -newkey rsa:2048 -nodes -keyout server-key.pem \
+    -out server-cert.pem -days 3650 -subj "/CN=localhost" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+  openssl req -x509 -newkey rsa:2048 -nodes -keyout other-key.pem \
+    -out /tmp/other-cert-throwaway.pem -days 3650 -subj "/CN=other-not-matching"

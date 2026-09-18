@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+import sys
 from typing import Any
 
 from .agent import main as emit_main
-from .server import create_server
+from .server import REASON_TLS_PARTIAL_CONFIGURATION, TlsConfigurationError, create_server
 from .store import Store
 
 
@@ -20,6 +21,16 @@ def main(argv: Sequence[str] | None = None, **emit_options: Any) -> int:
     serve.add_argument("--database", default="runner-observability.sqlite")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument(
+        "--tls-cert",
+        default=None,
+        help="TLS certificate file; must be paired with --tls-key to serve HTTPS instead of plain HTTP",
+    )
+    serve.add_argument(
+        "--tls-key",
+        default=None,
+        help="TLS private key file; must be paired with --tls-cert to serve HTTPS instead of plain HTTP",
+    )
     emit = subcommands.add_parser("emit", help="validate and deliver one schema-v1 event")
     emit.add_argument("--endpoint", required=True)
     emit.add_argument("--token", required=True)
@@ -38,8 +49,32 @@ def main(argv: Sequence[str] | None = None, **emit_options: Any) -> int:
             ],
             **emit_options,
         )
+    # Check the --tls-cert/--tls-key pairing before touching the database
+    # at all: create_server() re-validates this (it is the single source
+    # of truth for the check), but a mistyped/partial TLS configuration is
+    # a likely, ordinary operator mistake, and it should fail without the
+    # side effect of creating/migrating the SQLite database file first.
+    if (arguments.tls_cert is None) != (arguments.tls_key is None):
+        print(f"serve failed reason={REASON_TLS_PARTIAL_CONFIGURATION}", file=sys.stderr)
+        return 2
     store = Store(arguments.database)
-    server = create_server(store, arguments.token, host=arguments.host, port=arguments.port)
+    try:
+        server = create_server(
+            store,
+            arguments.token,
+            host=arguments.host,
+            port=arguments.port,
+            tls_cert_path=arguments.tls_cert,
+            tls_key_path=arguments.tls_key,
+        )
+    except TlsConfigurationError as error:
+        # Redacted, controlled failure: never a raw traceback, never the
+        # configured cert/key path, never the underlying ssl/OSError text.
+        # No partially-started server is left behind -- create_server()
+        # raises before any listening socket is bound.
+        print(f"serve failed reason={error.reason}", file=sys.stderr)
+        store.close()
+        return 2
     try:
         server.serve_forever()
     except KeyboardInterrupt:
