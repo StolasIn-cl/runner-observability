@@ -8,5 +8,10 @@ version = "0.1.0"
 description = "Restricted v1 telemetry contract for runner observability"
 requires-python = ">=3.11"
 
+[project.optional-dependencies]
+windows-service = [
+    "pywin32>=306; platform_system == 'Windows'",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
