@@ -214,6 +214,54 @@ service status after boot/reboot, effective ACL inspection, effective
 Firewall behavior, TLS trust, Runner reconnect, and production-ready
 decision must be timestamped by the #6 HITL operator checklist.
 
+## Runner Heartbeat Service (issue #9)
+
+Issue #9 supplies the Runner Heartbeat Service and its SCM lifecycle script.
+It is separate from the Monitor Host service in issue #8: the Runner service
+only sends outbound `runner.heartbeat` telemetry and never changes a CI
+process exit code. The service waits for the Monitor endpoint to become
+network-ready, sends one heartbeat immediately, then schedules the next
+heartbeat every 60 seconds from a monotonic deadline so delivery time does
+not accumulate drift.
+
+Install the optional Windows service dependency on the Runner, then run the
+install action from an elevated PowerShell prompt. The token is read from a
+file; it is never placed in the service command line or heartbeat state file:
+
+```powershell
+python -m pip install ".[windows-service]"
+./scripts/Install-RunnerHeartbeatService.ps1 `
+    -Action Install `
+    -ConfigPath "C:\runner-observability\heartbeat-config.json" `
+    -PythonPath "C:\Python311\python.exe" `
+    -Endpoint "https://<monitor-host>:8765" `
+    -TokenPath "C:\secure\runner-observability-token.txt" `
+    -RunnerId "<runner-uuid>" `
+    -StatePath "C:\runner-observability\runner-heartbeat-state.json"
+```
+
+The configuration and state writes are atomic. Each Runner has its own
+`runner_id`, `producer_id`, `producer_epoch`, sequence, and local state file;
+do not copy a state file from another Runner. The service account receives
+read access to the config/token files and modify access to the state-file
+directory. Use the same script for `Status`, `Start`, `Stop`, `Restart`, and
+`Uninstall`; uninstall removes only the named service and leaves the token,
+state, and evidence files for operator cleanup.
+
+```powershell
+./scripts/Install-RunnerHeartbeatService.ps1 -Action Status
+./scripts/Install-RunnerHeartbeatService.ps1 -Action Start
+./scripts/Install-RunnerHeartbeatService.ps1 -Action Stop
+./scripts/Install-RunnerHeartbeatService.ps1 -Action Restart
+./scripts/Install-RunnerHeartbeatService.ps1 -Action Uninstall
+```
+
+Local tests cover state isolation, atomic persistence, drift-free scheduling,
+network-ready startup, bounded delivery, fail-open diagnostics, configuration
+redaction, and SCM/script shape. They do not claim that a real Runner reboot,
+Windows SCM status, certificate trust, ACL, reconnect, or Monitor restart was
+observed. Those timestamped facts remain issue #6's HITL evidence boundary.
+
 ## Runner canary script (issue #6, using issue #7 HTTPS)
 
 After issue #7, the monitor can serve genuine HTTPS when it is started with
