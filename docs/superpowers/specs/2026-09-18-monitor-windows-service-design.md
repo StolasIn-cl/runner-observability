@@ -125,4 +125,3 @@ simulation 行為完全維持，避免 local tests 偷假設真實 SCM 或 Firew
   identity；這些由 #6 operator window 確認，腳本只提供可驗證的輸入邊界。
 - 不修改 CI workflow 的 job progress/fallback mapping。
 - 不把 local tests 或 service script dry-run 寫成 production-ready verdict。
-
