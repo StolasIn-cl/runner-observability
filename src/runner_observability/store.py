@@ -32,7 +32,9 @@ class Store:
     """Own a local SQLite database containing safe events and generic views."""
 
     def __init__(self, database: str | Path = ":memory:") -> None:
-        self._connection = sqlite3.connect(str(database))
+        # The monitor's HTTP server serializes Store calls with its own lock,
+        # while serving them from request threads.
+        self._connection = sqlite3.connect(str(database), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._notifier: Notifier | None = None
         self._degraded_reasons: set[str] = set()
