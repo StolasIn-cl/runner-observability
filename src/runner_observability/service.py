@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 import json
 import os
@@ -9,7 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 
 class ServiceConfigError(ValueError):
@@ -162,3 +163,188 @@ def build_service_bin_path(config_path: Path | str, python_executable: Path | st
             str(config_path),
         ]
     )
+
+
+class ChildProcess(Protocol):
+    def poll(self) -> int | None: ...
+
+    def terminate(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    def kill(self) -> None: ...
+
+
+class StopEvent(Protocol):
+    def is_set(self) -> bool: ...
+
+    def wait(self, timeout: float | None = None) -> bool: ...
+
+
+PopenFactory = Callable[..., ChildProcess]
+
+
+class MonitorChildSupervisor:
+    """Run one monitor child and stop it with a bounded termination sequence."""
+
+    def __init__(
+        self,
+        command: Sequence[str],
+        popen_factory: PopenFactory = subprocess.Popen,
+        *,
+        stop_timeout: float = 10.0,
+        poll_interval: float = 0.25,
+    ) -> None:
+        self._command = tuple(command)
+        self._popen_factory = popen_factory
+        self._stop_timeout = stop_timeout
+        self._poll_interval = poll_interval
+        self._child: ChildProcess | None = None
+
+    def run(self, stop_event: StopEvent) -> int:
+        self._child = self._popen_factory(
+            self._command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        child = self._child
+        while True:
+            return_code = child.poll()
+            if return_code is not None:
+                return return_code
+            if stop_event.is_set():
+                self.stop()
+                return_code = child.poll()
+                return 0 if return_code is None else return_code
+            stop_event.wait(self._poll_interval)
+
+    def stop(self) -> None:
+        child = self._child
+        if child is None or child.poll() is not None:
+            return
+        try:
+            child.terminate()
+            child.wait(timeout=self._stop_timeout)
+            return
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            pass
+        try:
+            child.kill()
+            child.wait(timeout=self._stop_timeout)
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            pass
+
+
+REASON_WINDOWS_SERVICE_UNAVAILABLE = "windows_service_unavailable"
+REASON_SERVICE_CHILD_START_FAILED = "service_child_start_failed"
+REASON_SERVICE_CHILD_FAILED = "service_child_failed"
+
+
+def _load_service_api() -> Any | None:
+    if os.name != "nt":
+        return None
+    try:
+        import servicemanager
+        import win32event
+        import win32service
+        import win32serviceutil
+    except ImportError:
+        return None
+    return type(
+        "WindowsServiceApi",
+        (),
+        {
+            "servicemanager": servicemanager,
+            "win32event": win32event,
+            "win32service": win32service,
+            "win32serviceutil": win32serviceutil,
+        },
+    )()
+
+
+def _make_service_class(config: ServiceConfig, service_api: Any, popen_factory: PopenFactory) -> type:
+    class MonitorWindowsService(service_api.win32serviceutil.ServiceFramework):
+        _svc_name_ = config.service_name
+        _svc_display_name_ = "Runner Observability Monitor"
+        _svc_description_ = "Runner Observability Monitor telemetry service"
+
+        def __init__(self, args: Sequence[str]) -> None:
+            super().__init__(args)
+            self._stop_handle = service_api.win32event.CreateEvent(None, 0, 0, None)
+            self._supervisor = MonitorChildSupervisor(
+                build_monitor_command(config), popen_factory=popen_factory
+            )
+
+        def SvcStop(self) -> None:  # noqa: N802 - pywin32 callback name
+            self.ReportServiceStatus(service_api.win32service.SERVICE_STOP_PENDING)
+            self._supervisor.stop()
+            service_api.win32event.SetEvent(self._stop_handle)
+
+        def SvcDoRun(self) -> None:  # noqa: N802 - pywin32 callback name
+            try:
+                exit_code = self._supervisor.run(_Win32StopEvent(service_api, self._stop_handle))
+            except OSError:
+                _log_service_reason(service_api, REASON_SERVICE_CHILD_START_FAILED)
+                return
+            if exit_code:
+                _log_service_reason(service_api, REASON_SERVICE_CHILD_FAILED)
+
+    return MonitorWindowsService
+
+
+class _Win32StopEvent:
+    def __init__(self, service_api: Any, handle: Any) -> None:
+        self._service_api = service_api
+        self._handle = handle
+
+    def is_set(self) -> bool:
+        return self._service_api.win32event.WaitForSingleObject(self._handle, 0) == self._service_api.win32event.WAIT_OBJECT_0
+
+    def wait(self, timeout: float | None = None) -> bool:
+        milliseconds = self._service_api.win32event.INFINITE if timeout is None else max(0, int(timeout * 1000))
+        return self._service_api.win32event.WaitForSingleObject(self._handle, milliseconds) == self._service_api.win32event.WAIT_OBJECT_0
+
+
+def _log_service_reason(service_api: Any, reason: str) -> None:
+    try:
+        service_api.servicemanager.LogErrorMsg(reason)
+    except Exception:
+        pass
+
+
+def run_service(
+    config_path: Path | str,
+    *,
+    service_api: Any | None = None,
+    popen_factory: PopenFactory = subprocess.Popen,
+) -> int:
+    """Connect the configured service class to SCM, or return a safe reason code."""
+    config = ServiceConfig.from_json(config_path)
+    api = service_api if service_api is not None else _load_service_api()
+    if api is None:
+        print(f"service failed reason={REASON_WINDOWS_SERVICE_UNAVAILABLE}", file=sys.stderr)
+        return 2
+    service_class = _make_service_class(config, api, popen_factory)
+    api.win32serviceutil.HandleCommandLine(service_class, argv=[sys.argv[0]])
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="runner-observability-service")
+    subcommands = parser.add_subparsers(dest="command", required=True)
+    run = subcommands.add_parser("run", help="run the configured Windows service host")
+    run.add_argument("--config", required=True)
+    arguments = parser.parse_args(argv)
+    if arguments.command != "run":
+        return 2
+    try:
+        return run_service(arguments.config)
+    except ServiceConfigError as error:
+        print(f"service failed reason={error.reason}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
