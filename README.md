@@ -94,3 +94,38 @@ occurred.
 **Next operator action:** open issue #6 and run its HITL deployment and
 acceptance checklist against a real Monitor Host, Runner A, and Runner B,
 recording results directly in `docs/canary-evidence-template.md`.
+
+## Local Deployment Simulation (issue #4 gap closure)
+
+`scripts/Install-RunnerObservability.ps1`,
+`scripts/Update-RunnerObservability.ps1`, and
+`scripts/Invoke-RunnerPreflight.ps1` implement and exercise the
+install/upgrade/rollback **contract** required by issue #4 (PERS-04)'s own
+verification table: a pinned revision, a preflight check battery
+(Python version, TLS certificate file presence, auth credential file
+presence, firewall, Monitor Host reachability), an atomic activation
+switch, a post-activation smoke test, and automatic rollback to the
+previous version on any failure. The substantive logic lives in
+`src/runner_observability/deploy.py` (unit-tested in
+`tests/test_deployment_docs.py`), with the PowerShell scripts as thin
+orchestration -- the same split already used for the Local Verification
+Gate's `gate.py` / `Invoke-VerificationGate.ps1`.
+
+```powershell
+./scripts/Invoke-RunnerPreflight.ps1 -TlsCertPath <path> -AuthTokenPath <path>
+./scripts/Install-RunnerObservability.ps1 -Revision <rev> -Source <dir> -InstallRoot <dir>
+./scripts/Update-RunnerObservability.ps1 -Revision <rev> -Source <dir> -InstallRoot <dir>
+```
+
+**This is 100% runner-independent local simulation**, proven against local
+fixture directories and injected/mocked checks -- it never installs a real
+Windows Service, never issues or trusts a real TLS certificate, never
+configures a real firewall rule, and never opens a real network socket on
+its own. The `-FirewallResult`/`-HostReachableResult` parameters only let
+an operator pass through a result already determined out of band; omitting
+them leaves those two checks unconfigured (fail-closed, not a silent real
+network call). Full install/upgrade/rollback/first-triage instructions for
+a different operator, without this ticket, are in `docs/runbook.md`. Real
+Monitor Host / Runner A / Runner B deployment, real TLS/auth/firewall
+configuration, and the production-ready decision remain issue #6 (HITL)'s
+responsibility, exactly as for the Local Verification Gate above.
