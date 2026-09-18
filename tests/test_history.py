@@ -75,6 +75,27 @@ class HistoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"^invalid_history_filter$"):
             self.store.history({"unapproved": "value"})
 
+    def test_recent_events_pushes_its_bound_into_sql_and_returns_oldest_first(self) -> None:
+        # dashboard.py uses this instead of history() so a live-view read
+        # never has to load and JSON-decode the entire retained event log; the
+        # LIMIT must be applied by SQLite, not by slicing a fully-materialised
+        # Python list, and the result must come back in the same oldest-first
+        # order history() uses.
+        self.require_store_method("recent_events")
+        for offset in range(1, 6):
+            self.store.ingest(
+                job_event(f"20000000-0000-4000-8000-00000000002{offset}", "job.heartbeat", offset),
+                at(seconds=offset),
+            )
+
+        bounded = self.store.recent_events(2)
+
+        self.assertEqual(
+            [item["event_id"] for item in bounded],
+            ["20000000-0000-4000-8000-000000000024", "20000000-0000-4000-8000-000000000025"],
+        )
+        self.assertEqual(bounded, self.store.history()[-2:])
+
     def test_history_filter_compares_legacy_variable_fractional_seconds_chronologically(self) -> None:
         event_id = "20000000-0000-4000-8000-000000000008"
         self.store.ingest(job_event(event_id, "job.started", 1), BASE + timedelta(microseconds=100_000))

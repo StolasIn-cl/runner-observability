@@ -1,0 +1,100 @@
+[
+  {
+    "schema_version": 1,
+    "event_type": "job.started",
+    "event_id": "31000000-0000-4000-8000-000000000001",
+    "runner_id": "41000000-0000-4000-8000-000000000001",
+    "producer_id": "runner-agent",
+    "producer_epoch": "2026-09-18T03",
+    "producer_sequence": 1,
+    "occurred_at": "2026-09-18T03:00:00Z",
+    "job": {
+      "repository": "acme/widgets",
+      "workflow_run_id": 600,
+      "run_attempt": 1,
+      "job_id": 2001,
+      "job_name": "dart-shard-07",
+      "run_url": "https://github.com/acme/widgets/actions/runs/600"
+    }
+  },
+  {
+    "schema_version": 1,
+    "event_type": "job.progress",
+    "event_id": "31000000-0000-4000-8000-000000000002",
+    "runner_id": "41000000-0000-4000-8000-000000000001",
+    "producer_id": "runner-agent",
+    "producer_epoch": "2026-09-18T03",
+    "producer_sequence": 2,
+    "occurred_at": "2026-09-18T03:00:05Z",
+    "job": {
+      "repository": "acme/widgets",
+      "workflow_run_id": 600,
+      "run_attempt": 1,
+      "job_id": 2001,
+      "job_name": "dart-shard-07",
+      "run_url": "https://github.com/acme/widgets/actions/runs/600"
+    },
+    "progress": {
+      "stage_id": "unsafe_group_detect",
+      "stage_kind": "phase",
+      "state": "running",
+      "determinate": true,
+      "total": 40,
+      "completed": 17,
+      "failed": 2,
+      "pending": 23,
+      "fallback_group_count": 0,
+      "affected_test_count": 0,
+      "attempt": 1
+    }
+  },
+  {
+    "schema_version": 1,
+    "event_type": "job.progress",
+    "event_id": "31000000-0000-4000-8000-000000000003",
+    "runner_id": "41000000-0000-4000-8000-000000000001",
+    "producer_id": "runner-agent",
+    "producer_epoch": "2026-09-18T03",
+    "producer_sequence": 3,
+    "occurred_at": "2026-09-18T03:00:10Z",
+    "job": {
+      "repository": "acme/widgets",
+      "workflow_run_id": 600,
+      "run_attempt": 1,
+      "job_id": 2001,
+      "job_name": "dart-shard-07",
+      "run_url": "https://github.com/acme/widgets/actions/runs/600"
+    },
+    "progress": {
+      "stage_id": "rebuild_test_mapping",
+      "stage_kind": "phase",
+      "state": "running",
+      "determinate": true,
+      "total": 120,
+      "completed": 90,
+      "failed": 4,
+      "pending": 26,
+      "fallback_group_count": 1,
+      "affected_test_count": 5,
+      "attempt": 1
+    }
+  },
+  {
+    "schema_version": 1,
+    "event_type": "job.started",
+    "event_id": "31000000-0000-4000-8000-000000000004",
+    "runner_id": "41000000-0000-4000-8000-000000000002",
+    "producer_id": "runner-agent",
+    "producer_epoch": "2026-09-18T03",
+    "producer_sequence": 1,
+    "occurred_at": "2026-09-18T03:00:20Z",
+    "job": {
+      "repository": "acme/widgets",
+      "workflow_run_id": 600,
+      "run_attempt": 1,
+      "job_id": 2002,
+      "job_name": "reduce",
+      "run_url": "https://github.com/acme/widgets/actions/runs/600"
+    }
+  }
+]

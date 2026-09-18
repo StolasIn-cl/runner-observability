@@ -7,12 +7,14 @@ from datetime import datetime, timezone
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
 import socket
 from threading import RLock
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from .contracts import MAX_PAYLOAD_BYTES, ValidationError, validate_event
+from .dashboard import dashboard_snapshot
 from .store import Store
 
 
@@ -20,6 +22,7 @@ Diagnostic = Callable[[str], None]
 Clock = Callable[[], datetime]
 MAX_REJECTED_BODY_DRAIN_BYTES = MAX_PAYLOAD_BYTES + 1
 REQUEST_READ_TIMEOUT_SECONDS = 1.0
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def create_server(
@@ -41,6 +44,9 @@ def create_server(
     request_clock = clock or (lambda: datetime.now(timezone.utc))
     report = diagnostic or (lambda _message: None)
     store_lock = RLock()
+    dashboard_html = STATIC_DIR.joinpath("index.html").read_bytes()
+    dashboard_css = STATIC_DIR.joinpath("app.css").read_bytes()
+    dashboard_js = STATIC_DIR.joinpath("app.js").read_bytes()
 
     class MonitorHandler(BaseHTTPRequestHandler):
         server_version = "RunnerObservability/1"
@@ -99,7 +105,13 @@ def create_server(
         def do_GET(self) -> None:  # noqa: N802 - required stdlib handler name
             parsed = urlsplit(self.path)
             if parsed.path == "/":
-                self._html()
+                self._static(dashboard_html, "text/html; charset=utf-8")
+                return
+            if parsed.path == "/app.css":
+                self._static(dashboard_css, "text/css; charset=utf-8")
+                return
+            if parsed.path == "/app.js":
+                self._static(dashboard_js, "application/javascript; charset=utf-8")
                 return
             if parsed.path == "/api/health":
                 with store_lock:
@@ -115,6 +127,16 @@ def create_server(
                     self._reject(400, "invalid_history_filter")
                     return
                 self._json(200, {"events": events})
+                return
+            if parsed.path == "/api/dashboard":
+                try:
+                    with store_lock:
+                        snapshot = dashboard_snapshot(store, request_clock())
+                except Exception:
+                    report("dashboard_snapshot_failed")
+                    self._json(500, {"error": "dashboard_unavailable"})
+                    return
+                self._json(200, snapshot)
                 return
             self._json(404, {"error": "not_found"})
 
@@ -183,20 +205,14 @@ def create_server(
             except OSError:
                 pass
 
-        def _html(self) -> None:
-            encoded = (
-                b"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-                b"<title>Runner Observability</title></head><body>"
-                b"<main><h1>Runner Observability</h1><p>Local monitor is running.</p></main>"
-                b"</body></html>"
-            )
+        def _static(self, body: bytes, content_type: str) -> None:
             self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             try:
-                self.wfile.write(encoded)
+                self.wfile.write(body)
             except OSError:
                 pass
 

@@ -98,6 +98,13 @@ class Store:
         ).fetchone()
         return dict(row) if row is not None else None
 
+    def list_runners(self) -> list[dict[str, Any]]:
+        """Return every known runner's current baseline view for read-only presentation."""
+        rows = self._connection.execute(
+            "SELECT * FROM runner_state ORDER BY last_received_at DESC, runner_id ASC"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def current_job(
         self, repository: str, workflow_run_id: int, run_attempt: int, job_id: int
     ) -> dict[str, Any] | None:
@@ -120,13 +127,24 @@ class Store:
         ).fetchall()
         history: list[dict[str, Any]] = []
         for row in rows:
-            item = dict(row)
-            item["payload"] = json.loads(item.pop("payload_json"))
-            item.pop("event_row_id")
-            item["projection_applied"] = bool(item["projection_applied"])
+            item = _history_item_from_row(row)
             if _matches_history_filters(item, active_filters):
                 history.append(item)
         return history
+
+    def recent_events(self, limit: int) -> list[dict[str, Any]]:
+        """Return only the most recent bounded slice of the log, oldest of the slice first.
+
+        Unlike ``history()``, this pushes the row-count bound into SQL via
+        ``LIMIT`` so a live-view caller (the dashboard) never has to load and
+        JSON-decode the entire retained log -- which, across seven days of
+        retention and per-job heartbeats, can be tens of thousands of rows --
+        just to look at the most recent activity.
+        """
+        rows = self._connection.execute(
+            "SELECT * FROM events ORDER BY event_row_id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [_history_item_from_row(row) for row in reversed(rows)]
 
     @property
     def degraded(self) -> bool:
@@ -460,6 +478,15 @@ def _parse_job_resource_id(resource_id: str) -> tuple[str, int, int, int] | None
         return repository, int(workflow_run_id), int(run_attempt), int(job_id)
     except ValueError:
         return None
+
+
+def _history_item_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Shared row-to-history-item transform used by both ``history()`` and ``recent_events()``."""
+    item = dict(row)
+    item["payload"] = json.loads(item.pop("payload_json"))
+    item.pop("event_row_id")
+    item["projection_applied"] = bool(item["projection_applied"])
+    return item
 
 
 def _matches_history_filters(item: Mapping[str, object], filters: Mapping[str, object]) -> bool:
