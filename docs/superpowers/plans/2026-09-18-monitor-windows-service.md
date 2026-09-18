@@ -6,9 +6,15 @@
 
 **Architecture:** Keep the existing Python monitor core unchanged at its public HTTP/store seams. Add a `--token-file` credential boundary, a Windows-only `pywin32` SCM host that supervises the existing `serve` process, and a PowerShell adapter that owns service/ACL/Firewall commands. Connect the existing pinned-release update flow through an injected service lifecycle seam so local tests remain simulated while an operator can run the real path on Windows.
 
-**Tech Stack:** Python 3.11+ standard library for monitor/config logic, optional `pywin32` on Windows for SCM callbacks, PowerShell 5.1+, `sc.exe`, `icacls`, and NetSecurity cmdlets; `unittest` and script-shape tests.
+**Tech Stack:** Python 3.11+ standard library for monitor/config logic, optional `pywin32` on Windows for SCM callbacks, PowerShell 5.1+, `sc.exe`, Windows ACL APIs, and NetSecurity cmdlets; `unittest` and script-shape tests.
 
 **Spec:** `docs/superpowers/specs/2026-09-18-monitor-windows-service-design.md`
+
+**Implementation status (2026-09-18):** Tasks 1–6 are implemented and committed.
+The local suite passes 264 tests; the three PowerShell scripts pass AST parsing.
+Task 7's GitHub synchronization is complete, while real Windows SCM/ACL/
+Firewall, boot/reboot, Runner reconnect, and production-ready evidence remain
+explicitly delegated to issue #6 HITL.
 
 ## Global Constraints
 
@@ -358,7 +364,7 @@ Thread the optional service adapter through the existing transaction/rollback pa
 
 - [ ] **Step 4: Add PowerShell wiring without changing simulation defaults**
 
-Extend `Update-RunnerObservability.ps1` with explicit service/config parameters. When those parameters are supplied, import the service module, stop the named service before invoking the Python deploy command, run the service-aware smoke/start sequence, and use the existing stable rollback output. Without them, retain the current preflight-only local simulation path.
+Extend `Update-RunnerObservability.ps1` with an explicit optional service name. When it is supplied, pass `--service-name` to the Python deploy command; the bounded `sc.exe` adapter performs the stop/start sequence and deploy rollback. Without it, retain the current runner-independent local simulation path.
 
 - [ ] **Step 5: Run focused deployment verification**
 
