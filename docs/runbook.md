@@ -38,8 +38,9 @@ any script or test in this repository.
 
 ## Prerequisites
 
-- Python 3.11 or newer on the target host (`python --version`). Nothing in
-  this repository requires third-party packages.
+- Python 3.11 or newer on the target host (`python --version`). The monitor
+  core uses the standard library; the Windows Service host additionally
+  requires the optional `windows-service` extra (`pywin32`).
 - PowerShell 5.1 or newer (Windows built-in `powershell.exe` is fine).
 - A built copy of this repository (or a specific pinned revision's
   contents) available as a local source directory to install from. This
@@ -148,6 +149,70 @@ python -m runner_observability emit --endpoint <url> --token <token> --event-jso
 
 This runbook does not repeat the full schema/CLI reference; see
 `README.md`'s "Schema-v1 boundary" section for that.
+
+## Windows Service startup (issue #8)
+
+Issue #8 supplies the SCM host and the operator scripts. The service host
+reads the bearer credential from `-TokenPath` and starts the monitor child
+with `--token-file`; the token value is never placed in `sc.exe` arguments,
+the service config, logs, or evidence. Install the optional Windows extra in
+the Python environment that will run the service, then run the install action
+from an elevated PowerShell prompt:
+
+```powershell
+python -m pip install ".[windows-service]"
+./scripts/Install-RunnerObservabilityService.ps1 `
+    -Action Install `
+    -ConfigPath "C:\runner-observability\service-config.json" `
+    -PythonPath "C:\Python311\python.exe" `
+    -TokenPath "C:\secure\runner-observability-token.txt" `
+    -DatabasePath "C:\runner-observability\data\monitor.sqlite" `
+    -TlsCertPath "C:\secure\monitor-cert.pem" `
+    -TlsKeyPath "C:\secure\monitor-key.pem" `
+    -RunnerAddress "192.168.24.141", "192.168.24.142"
+```
+
+The install action writes the non-secret config atomically, applies read ACLs
+to the token/TLS/config files, grants the service account modify access to the
+database directory, registers automatic SCM recovery, and creates the fixed
+`Runner Observability Monitor TCP 8765` Firewall allow rule for the supplied
+Runner addresses. The module's concrete Windows operations are the equivalent
+of `icacls` ACL grants and `New-NetFirewallRule`/`Remove-NetFirewallRule` rule
+replacement; the install action does not accept a service-account password.
+
+Use the same script for lifecycle operations; each operation targets only the
+named service and the fixed Firewall rule:
+
+```powershell
+./scripts/Install-RunnerObservabilityService.ps1 -Action Status
+./scripts/Install-RunnerObservabilityService.ps1 -Action Start
+./scripts/Install-RunnerObservabilityService.ps1 -Action Stop
+./scripts/Install-RunnerObservabilityService.ps1 -Action Restart
+./scripts/Install-RunnerObservabilityService.ps1 -Action Uninstall
+```
+
+For a pinned release update of an already-installed service, pass its service
+name to the existing update script. The update flow stops the service before
+the atomic release switch, runs the staged smoke test, starts the service, and
+restores the previous release if service start fails:
+
+```powershell
+./scripts/Update-RunnerObservability.ps1 `
+    -Revision "1.1.0" `
+    -Source "C:\path\to\built\1.1.0" `
+    -InstallRoot "C:\runner-observability" `
+    -ServiceName "RunnerObservabilityMonitor" `
+    -TlsCertPath "C:\secure\monitor-cert.pem" `
+    -TlsKeyPath "C:\secure\monitor-key.pem" `
+    -AuthTokenPath "C:\secure\runner-observability-token.txt" `
+    -FirewallResult Pass `
+    -HostReachableResult Pass
+```
+
+The scripts and tests provide the implementation contract only. A real
+service status after boot/reboot, effective ACL inspection, effective
+Firewall behavior, TLS trust, Runner reconnect, and production-ready
+decision must be timestamped by the #6 HITL operator checklist.
 
 ## Runner canary script (issue #6, using issue #7 HTTPS)
 
@@ -336,7 +401,7 @@ raw exception message, stack trace, absolute path, or token value.
 | `firewall_port_blocked` | A real firewall check was wired up and reported the port is blocked | Open the ingest port for the Monitor Host per your organization's firewall change process (issue #6) |
 | `host_reachability_check_not_configured` | `-HostReachableResult` was omitted -- this check is **required**, not optional, for install/update to proceed | Determine the real Monitor Host reachability outcome out of band and pass `-HostReachableResult Pass` or `-HostReachableResult Fail` explicitly. There is no way to skip this check |
 | `monitor_host_unreachable` | A real reachability check was wired up and the host did not respond within 3 attempts | Confirm the Monitor Host process is running and the network path to it is up; this check never retries beyond 3 attempts, so a transient blip should simply be re-run manually |
-| `service_start_failed` | **Reserved for issue #6.** No script in this repository's local simulation currently wires up a real service-start check -- the only post-activation check the real scripts run today is `smoke_test_failed` below. This reason code exists in `deploy.py`'s generic post-activation-check machinery for a future, real Windows Service start check that issue #6 may add; you will not see it from today's scripts | If you ever do see this from a modified/future script, treat it the same as `smoke_test_failed`: the previous revision has already been automatically restored (or deactivated if its directory was pruned -- see `rollback_target_missing`) |
+| `service_start_failed` | A service-enabled update could not start the named existing Windows Service after the new release smoke test | The previous release is restored and the service start is retried against that release; if the previous release was pruned, the update deactivates rather than leaving the broken revision active. Real boot/reboot and effective SCM evidence remains #6 HITL work |
 | `smoke_test_failed` | The newly activated revision's own CLI entrypoint did not run cleanly (`python -m runner_observability --help` failed or timed out) | The previous revision (or "nothing active", on a first install) has already been automatically restored; re-run the newly staged revision's smoke test manually to investigate before retrying the update |
 | `rollback_target_missing` | A post-activation check failed, but the previous revision's `releases\<revision>\` directory was manually removed, so automatic rollback could not restore it | The broken new revision has been deactivated (not left active) -- `current-release.txt` now reflects "nothing active" or the last state before this attempt. Re-stage the previous revision's files (re-run `Update-RunnerObservability.ps1` with its `-Revision`/`-Source`) to restore it, or fix and retry the new revision |
 | `source_unavailable` | `-Source` does not exist, is not readable, or is otherwise unusable when staging began | Confirm `-Source` points at a real, readable local directory containing the revision's built files, then re-run |

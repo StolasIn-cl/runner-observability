@@ -1202,12 +1202,13 @@ class RunbookShapeTests(unittest.TestCase):
         # tolerable must be gone.
         self.assertNotIn("expected on a bare local-simulation run", lowered)
 
-    def test_runbook_marks_service_start_failed_as_reserved_not_currently_active(self) -> None:
+    def test_runbook_documents_service_start_failure_and_hitl_boundary(self) -> None:
         lowered = self.text.lower()
         self.assertIn("service_start_failed", lowered)
         service_start_index = lowered.index("service_start_failed")
         surrounding = lowered[service_start_index : service_start_index + 400]
-        self.assertIn("reserved for issue #6", surrounding)
+        self.assertIn("previous release", surrounding)
+        self.assertIn("#6", surrounding)
 
     def test_runbook_documents_the_rollback_target_missing_reason(self) -> None:
         self.assertIn("rollback_target_missing", self.text)
@@ -1227,6 +1228,24 @@ class RunbookShapeTests(unittest.TestCase):
         # on HTTPS, not just how to run the preflight file-presence check.
         self.assertIn("--tls-cert", self.text)
         self.assertIn("--tls-key", self.text)
+
+    def test_runbook_documents_token_file_service_startup_and_lifecycle(self) -> None:
+        lowered = self.text.lower()
+        for term in (
+            "--token-file",
+            "install-runnerobservabilityservice.ps1",
+            "sc.exe",
+            "icacls",
+            "new-netfirewallrule",
+            "restart",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, lowered)
+
+    def test_runbook_keeps_live_acceptance_in_issue_6(self) -> None:
+        lowered = self.text.lower()
+        self.assertIn("issue #6", lowered)
+        self.assertIn("real", lowered)
 
     def test_update_script_can_enable_existing_service_lifecycle(self) -> None:
         update_script = (REPO_ROOT / "scripts" / "Update-RunnerObservability.ps1").read_text(encoding="utf-8")

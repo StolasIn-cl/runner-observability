@@ -43,6 +43,22 @@ python -m runner_observability serve --token <token> --database <path> `
     --tls-cert <path\to\tls-cert.pem> --tls-key <path\to\tls-key.pem>
 ```
 
+For Windows Service startup, keep the bearer credential in an ACL-protected
+file and use the service host's `--token-file` path boundary. The service
+command line contains the config/token file paths, never the token value:
+
+```powershell
+python -m runner_observability serve --token-file <path\to\token.txt> --database <path>
+```
+
+Install and manage the SCM service with
+`scripts/Install-RunnerObservabilityService.ps1`; it also applies the
+service-file ACLs and the fixed Runner-address Firewall rule. Use
+`-ServiceName` on `scripts/Update-RunnerObservability.ps1` to include service
+stop/start in a pinned release update and rollback. The scripts' local
+contract tests do not claim that a real host, reboot, effective Firewall, or
+production-ready decision has been observed; those facts belong to issue #6.
+
 `--tls-cert`/`--tls-key` are optional, stdlib-`ssl`-only (no third-party
 TLS dependency), and must be provided as a pair -- supplying only one is a
 controlled, redacted error and the monitor never starts serving. A
