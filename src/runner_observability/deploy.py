@@ -54,6 +54,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+from typing import Protocol
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +137,74 @@ class PreflightReport:
 
 
 BoolProbe = Callable[[], bool]
+
+
+class ServiceLifecycle(Protocol):
+    """Minimal service adapter used only when a real service is configured."""
+
+    def stop(self) -> bool: ...
+
+    def start(self) -> bool: ...
+
+    def status(self) -> str: ...
+
+
+ServiceCommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+
+
+class WindowsScServiceLifecycle:
+    """Bounded service lifecycle adapter used by the explicit Windows CLI path."""
+
+    def __init__(
+        self,
+        service_name: str,
+        command_runner: ServiceCommandRunner | None = None,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self._service_name = service_name
+        self._timeout_seconds = timeout_seconds
+        self._command_runner = command_runner or self._run_command
+
+    def stop(self) -> bool:
+        if self.status() == "stopped":
+            return True
+        return self._invoke("stop")
+
+    def start(self) -> bool:
+        if self.status() == "running":
+            return True
+        return self._invoke("start")
+
+    def status(self) -> str:
+        try:
+            result = self._command_runner(("query", self._service_name))
+        except Exception:
+            return "unknown"
+        output = f"{result.stdout}\n{result.stderr}".upper()
+        if result.returncode != 0 and "STOPPED" not in output:
+            return "unknown"
+        if "RUNNING" in output:
+            return "running"
+        if "STOPPED" in output:
+            return "stopped"
+        return "unknown"
+
+    def _invoke(self, action: str) -> bool:
+        try:
+            result = self._command_runner((action, self._service_name))
+        except Exception:
+            return False
+        return result.returncode == 0
+
+    def _run_command(self, arguments: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["sc.exe", *arguments],
+            capture_output=True,
+            text=True,
+            timeout=self._timeout_seconds,
+            check=False,
+        )
 
 
 def check_python_version(*, actual: tuple[int, int] | None = None, minimum: tuple[int, int] = (3, 11)) -> CheckResult:
@@ -410,6 +479,7 @@ def deploy_release(
     *,
     preflight_report: PreflightReport,
     post_activation_checks: Sequence[tuple[str, BoolProbe]] = (),
+    service_lifecycle: ServiceLifecycle | None = None,
 ) -> DeployResult:
     """Stage, atomically activate, and verify one revision; roll back on any failure.
 
@@ -437,9 +507,44 @@ def deploy_release(
         )
 
     previous_revision = layout.current_revision()
+    service_stopped = False
 
-    layout.stage_release(revision, source_dir)
-    layout.activate(revision)
+    if service_lifecycle is not None:
+        try:
+            service_stopped = bool(service_lifecycle.stop())
+        except Exception:
+            service_stopped = False
+        if not service_stopped:
+            return DeployResult(
+                revision=revision,
+                success=False,
+                rolled_back=False,
+                restored_revision=previous_revision,
+                failure_reason="service_stop_failed",
+                preflight=preflight_report,
+            )
+
+    try:
+        layout.stage_release(revision, source_dir)
+        layout.activate(revision)
+    except Exception:
+        if previous_revision is None:
+            layout.deactivate()
+        elif layout.release_exists(previous_revision):
+            layout.activate(previous_revision)
+        if service_lifecycle is not None and service_stopped:
+            try:
+                service_lifecycle.start()
+            except Exception:
+                pass
+        return DeployResult(
+            revision=revision,
+            success=False,
+            rolled_back=previous_revision is not None,
+            restored_revision=previous_revision,
+            failure_reason="deployment_failed",
+            preflight=preflight_report,
+        )
 
     for check_name, check in post_activation_checks:
         try:
@@ -447,44 +552,30 @@ def deploy_release(
         except Exception:
             passed = False
         if not passed:
-            if previous_revision is None:
-                # First install: there was never a previous revision to
-                # restore -- deactivate so the broken new revision is not
-                # left active.
-                layout.deactivate()
-                return DeployResult(
-                    revision=revision,
-                    success=False,
-                    rolled_back=True,
-                    restored_revision=None,
-                    failure_reason=f"{check_name}_failed",
-                    preflight=preflight_report,
-                )
-            if not layout.release_exists(previous_revision):
-                # The previous revision's directory is gone (e.g. an
-                # operator manually pruned releases/<previous>, which the
-                # runbook documents as an allowed manual decision). Rollback
-                # cannot restore it -- never leave the just-activated,
-                # known-broken revision active instead. Deactivate and
-                # report a distinct, stable reason so the operator knows
-                # manual recovery is required.
-                layout.deactivate()
-                return DeployResult(
-                    revision=revision,
-                    success=False,
-                    rolled_back=True,
-                    restored_revision=None,
-                    failure_reason=REASON_ROLLBACK_TARGET_MISSING,
-                    preflight=preflight_report,
-                )
-            layout.activate(previous_revision)
-            return DeployResult(
-                revision=revision,
-                success=False,
-                rolled_back=True,
-                restored_revision=previous_revision,
-                failure_reason=f"{check_name}_failed",
-                preflight=preflight_report,
+            return _rollback_after_failure(
+                layout,
+                revision,
+                previous_revision,
+                f"{check_name}_failed",
+                preflight_report,
+                service_lifecycle,
+                service_stopped,
+            )
+
+    if service_lifecycle is not None:
+        try:
+            service_started = bool(service_lifecycle.start())
+        except Exception:
+            service_started = False
+        if not service_started:
+            return _rollback_after_failure(
+                layout,
+                revision,
+                previous_revision,
+                "service_start_failed",
+                preflight_report,
+                service_lifecycle,
+                service_stopped,
             )
 
     return DeployResult(
@@ -493,6 +584,52 @@ def deploy_release(
         rolled_back=False,
         restored_revision=None,
         failure_reason="",
+        preflight=preflight_report,
+    )
+
+
+def _rollback_after_failure(
+    layout: ReleaseLayout,
+    revision: str,
+    previous_revision: str | None,
+    failure_reason: str,
+    preflight_report: PreflightReport,
+    service_lifecycle: ServiceLifecycle | None,
+    service_stopped: bool,
+) -> DeployResult:
+    """Restore a safe release and best-effort restart the previous service."""
+    if previous_revision is None:
+        layout.deactivate()
+        return DeployResult(
+            revision=revision,
+            success=False,
+            rolled_back=True,
+            restored_revision=None,
+            failure_reason=failure_reason,
+            preflight=preflight_report,
+        )
+    if not layout.release_exists(previous_revision):
+        layout.deactivate()
+        return DeployResult(
+            revision=revision,
+            success=False,
+            rolled_back=True,
+            restored_revision=None,
+            failure_reason=REASON_ROLLBACK_TARGET_MISSING,
+            preflight=preflight_report,
+        )
+    layout.activate(previous_revision)
+    if service_lifecycle is not None and service_stopped:
+        try:
+            service_lifecycle.start()
+        except Exception:
+            pass
+    return DeployResult(
+        revision=revision,
+        success=False,
+        rolled_back=True,
+        restored_revision=previous_revision,
+        failure_reason=failure_reason,
         preflight=preflight_report,
     )
 
@@ -543,6 +680,7 @@ def main(
     host_reachable_probe: BoolProbe | None = None,
     max_host_attempts: int = 3,
     smoke_test: Callable[[Path], bool] | None = None,
+    service_lifecycle: ServiceLifecycle | None = None,
     printer: Printer = print,
 ) -> int:
     """Dispatch ``preflight`` / ``install`` / ``update``.
@@ -573,6 +711,7 @@ def main(
         sub.add_argument("--auth-token-path", default=None)
         sub.add_argument("--firewall-result", choices=("pass", "fail"), default=None)
         sub.add_argument("--host-reachable-result", choices=("pass", "fail"), default=None)
+        sub.add_argument("--service-name", default=None)
 
     args = parser.parse_args(argv)
 
@@ -619,6 +758,10 @@ def main(
         chosen = smoke_test if smoke_test is not None else default_smoke_test
         return bool(chosen(layout.release_path(args.revision)))
 
+    effective_service_lifecycle = service_lifecycle
+    if effective_service_lifecycle is None and getattr(args, "service_name", None):
+        effective_service_lifecycle = WindowsScServiceLifecycle(args.service_name)
+
     # Any unexpected failure below (a mistyped/missing -Source, an
     # unwritable -InstallRoot, a rollback target that was manually pruned,
     # or anything else the preflight battery could not anticipate) must
@@ -634,6 +777,7 @@ def main(
             args.source,
             preflight_report=preflight_report,
             post_activation_checks=(("smoke_test", _smoke),),
+            service_lifecycle=effective_service_lifecycle,
         )
     except InvalidRevisionError:
         printer(

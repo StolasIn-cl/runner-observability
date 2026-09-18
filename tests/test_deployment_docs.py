@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -499,6 +500,23 @@ class DeployReleaseTests(unittest.TestCase):
     def _failing_preflight(self) -> "deploy.PreflightReport":
         return deploy.PreflightReport(checks=(deploy.CheckResult("stub", False, "stub_failed"),))
 
+    class _FakeService:
+        def __init__(self, calls: list[str], start_results: list[bool] | None = None, stop_result: bool = True) -> None:
+            self.calls = calls
+            self.start_results = list(start_results or [True])
+            self.stop_result = stop_result
+
+        def stop(self) -> bool:
+            self.calls.append("stop")
+            return self.stop_result
+
+        def start(self) -> bool:
+            self.calls.append("start")
+            return self.start_results.pop(0) if self.start_results else True
+
+        def status(self) -> str:
+            return "running"
+
     def test_a_preflight_failure_blocks_the_deploy_and_leaves_no_active_release(self) -> None:
         result = deploy.deploy_release(
             self.layout, "1.0.0", self.source_a, preflight_report=self._failing_preflight()
@@ -583,6 +601,70 @@ class DeployReleaseTests(unittest.TestCase):
         self.assertEqual(result.failure_reason, "service_start_failed")
         self.assertEqual(self.layout.current_revision(), "1.0.0")
         self.assertEqual(smoke_test_calls, [])  # short-circuits, does not run later checks
+
+    def test_service_enabled_update_stops_before_activation_and_starts_after_smoke(self) -> None:
+        self.layout.stage_release("1.0.0", self.source_a)
+        self.layout.activate("1.0.0")
+        calls: list[str] = []
+        service = self._FakeService(calls)
+
+        def smoke_test() -> bool:
+            calls.append("smoke")
+            return True
+
+        result = deploy.deploy_release(
+            self.layout,
+            "2.0.0",
+            self.source_b,
+            preflight_report=self._passing_preflight(),
+            post_activation_checks=(("smoke_test", smoke_test),),
+            service_lifecycle=service,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(calls, ["stop", "smoke", "start"])
+        self.assertEqual(self.layout.current_revision(), "2.0.0")
+
+    def test_service_start_failure_restores_previous_release_and_restarts_old_service(self) -> None:
+        self.layout.stage_release("1.0.0", self.source_a)
+        self.layout.activate("1.0.0")
+        calls: list[str] = []
+        service = self._FakeService(calls, start_results=[False, True])
+
+        result = deploy.deploy_release(
+            self.layout,
+            "2.0.0",
+            self.source_b,
+            preflight_report=self._passing_preflight(),
+            post_activation_checks=(("smoke_test", lambda: True),),
+            service_lifecycle=service,
+        )
+
+        self.assertFalse(result.success)
+        self.assertTrue(result.rolled_back)
+        self.assertEqual(result.failure_reason, "service_start_failed")
+        self.assertEqual(calls, ["stop", "start", "start"])
+        self.assertEqual(self.layout.current_revision(), "1.0.0")
+
+    def test_service_stop_failure_does_not_stage_or_switch_a_release(self) -> None:
+        self.layout.stage_release("1.0.0", self.source_a)
+        self.layout.activate("1.0.0")
+        calls: list[str] = []
+        service = self._FakeService(calls, stop_result=False)
+
+        result = deploy.deploy_release(
+            self.layout,
+            "2.0.0",
+            self.source_b,
+            preflight_report=self._passing_preflight(),
+            service_lifecycle=service,
+        )
+
+        self.assertFalse(result.success)
+        self.assertFalse(result.rolled_back)
+        self.assertEqual(result.failure_reason, "service_stop_failed")
+        self.assertEqual(calls, ["stop"])
+        self.assertEqual(self.layout.current_revision(), "1.0.0")
 
     def test_rollback_is_repeatable_across_consecutive_failed_upgrade_attempts(self) -> None:
         self.layout.stage_release("1.0.0", self.source_a)
@@ -689,6 +771,45 @@ class DeployReleaseTests(unittest.TestCase):
         serialized = repr(result)
         self.assertNotIn(str(self.source_a), serialized)
         self.assertNotIn(str(self.install_root), serialized)
+
+
+class WindowsScServiceLifecycleTests(unittest.TestCase):
+    def test_stop_is_idempotent_for_an_already_stopped_service(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def runner(arguments: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+            calls.append(arguments)
+            return subprocess.CompletedProcess(arguments, 0, stdout="STATE : 1  STOPPED", stderr="")
+
+        lifecycle = deploy.WindowsScServiceLifecycle("RunnerObservabilityMonitor", runner)
+
+        self.assertTrue(lifecycle.stop())
+        self.assertEqual(calls, [("query", "RunnerObservabilityMonitor")])
+
+    def test_start_runs_only_after_status_is_not_running(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def runner(arguments: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+            calls.append(arguments)
+            if arguments[0] == "query":
+                return subprocess.CompletedProcess(arguments, 0, stdout="STATE : 1  STOPPED", stderr="")
+            return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+        lifecycle = deploy.WindowsScServiceLifecycle("RunnerObservabilityMonitor", runner)
+
+        self.assertTrue(lifecycle.start())
+        self.assertEqual(
+            calls,
+            [("query", "RunnerObservabilityMonitor"), ("start", "RunnerObservabilityMonitor")],
+        )
+
+    def test_command_failure_is_redacted_as_false(self) -> None:
+        def runner(arguments: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(arguments, 1, stdout="secret path", stderr="raw failure")
+
+        lifecycle = deploy.WindowsScServiceLifecycle("RunnerObservabilityMonitor", runner)
+
+        self.assertFalse(lifecycle.start())
 
 
 # ---------------------------------------------------------------------------
@@ -1106,6 +1227,12 @@ class RunbookShapeTests(unittest.TestCase):
         # on HTTPS, not just how to run the preflight file-presence check.
         self.assertIn("--tls-cert", self.text)
         self.assertIn("--tls-key", self.text)
+
+    def test_update_script_can_enable_existing_service_lifecycle(self) -> None:
+        update_script = (REPO_ROOT / "scripts" / "Update-RunnerObservability.ps1").read_text(encoding="utf-8")
+        self.assertIn("$ServiceName", update_script)
+        self.assertIn('"--service-name", $ServiceName', update_script)
+        self.assertIn("does not install", update_script.lower())
 
 
 class CanaryEvidenceTemplateShapeTests(unittest.TestCase):

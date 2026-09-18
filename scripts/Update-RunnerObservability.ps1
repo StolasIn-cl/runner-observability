@@ -16,10 +16,13 @@
     reason. This is repeatable: re-running a still-failing update reaches
     the same safe "previous version still active" state every time.
 
-    This script never installs a real Windows Service, never issues or
-    trusts a real TLS certificate, never configures a real firewall rule,
-    and never deploys to a real Monitor Host, Runner A, or Runner B --
-    those are issue #6 (HITL) responsibilities. See docs/runbook.md.
+    This script does not install a Windows Service or configure a Firewall
+    rule. When -ServiceName is supplied for an already-installed service, it
+    stops the service before activation and starts it after the smoke test;
+    the Python deployment contract restores the previous release if that
+    start fails. Real TLS trust, effective Firewall policy, and deployment
+    to a real Monitor Host, Runner A, or Runner B remain issue #6 (HITL)
+    responsibilities. See docs/runbook.md.
 
 .PARAMETER Revision
     The pinned revision identifier to upgrade to (e.g. "1.1.0" or a commit
@@ -47,6 +50,11 @@
 .PARAMETER HostReachableResult
     See Invoke-RunnerPreflight.ps1.
 
+.PARAMETER ServiceName
+    Optional existing Windows Service name. If supplied, service lifecycle is
+    included in the pinned update/rollback sequence; this script does not
+    install the service.
+
 .EXAMPLE
     ./scripts/Update-RunnerObservability.ps1 -Revision "1.1.0" -Source "C:\path\to\built\1.1.0" -InstallRoot "C:\runner-observability"
 
@@ -68,7 +76,8 @@ param(
     [ValidateSet("Pass", "Fail")]
     [string]$FirewallResult = "",
     [ValidateSet("Pass", "Fail")]
-    [string]$HostReachableResult = ""
+    [string]$HostReachableResult = "",
+    [string]$ServiceName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -108,6 +117,9 @@ if ($FirewallResult) {
 }
 if ($HostReachableResult) {
     $pythonArgs += @("--host-reachable-result", $HostReachableResult.ToLowerInvariant())
+}
+if (-not [string]::IsNullOrWhiteSpace($ServiceName)) {
+    $pythonArgs += @("--service-name", $ServiceName)
 }
 
 $hadPreviousPythonPath = Test-Path Env:PYTHONPATH
