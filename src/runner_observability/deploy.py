@@ -527,7 +527,15 @@ def deploy_release(
     try:
         layout.stage_release(revision, source_dir)
         layout.activate(revision)
+    except FileNotFoundError:
+        deployment_failure_reason = REASON_SOURCE_UNAVAILABLE
+    except OSError:
+        deployment_failure_reason = REASON_INSTALL_ROOT_UNWRITABLE
     except Exception:
+        deployment_failure_reason = "deployment_failed"
+    else:
+        deployment_failure_reason = ""
+    if deployment_failure_reason:
         if previous_revision is None:
             layout.deactivate()
         elif layout.release_exists(previous_revision):
@@ -542,7 +550,7 @@ def deploy_release(
             success=False,
             rolled_back=previous_revision is not None,
             restored_revision=previous_revision,
-            failure_reason="deployment_failed",
+            failure_reason=deployment_failure_reason,
             preflight=preflight_report,
         )
 
