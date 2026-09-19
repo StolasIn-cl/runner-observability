@@ -1,0 +1,5 @@
+
+[windows-service]
+
+[windows-service:platform_system == "Windows"]
+pywin32>=306

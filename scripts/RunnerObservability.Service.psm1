@@ -146,13 +146,13 @@ function Register-RunnerObservabilityService {
 
     $binPath = '"{0}" -m runner_observability.service run --config "{1}"' -f $PythonPath, $ConfigPath
     Invoke-RunnerObservabilityNativeCommand -FilePath "sc.exe" -ArgumentList @(
-        "create", $ServiceName, "binPath= $binPath", "start= auto", "DisplayName= Runner Observability Monitor"
+        "create", $ServiceName, "binPath=", $binPath, "start=", "auto", "DisplayName=", "Runner Observability Monitor"
     ) | Out-Null
     Invoke-RunnerObservabilityNativeCommand -FilePath "sc.exe" -ArgumentList @(
-        "config", $ServiceName, "obj= $ServiceAccount", "start= auto"
+        "config", $ServiceName, "obj=", $ServiceAccount, "start=", "auto"
     ) | Out-Null
     Invoke-RunnerObservabilityNativeCommand -FilePath "sc.exe" -ArgumentList @(
-        "failure", $ServiceName, "reset= 86400", "actions= restart/5000/restart/30000/restart/60000"
+        "failure", $ServiceName, "reset=", "86400", "actions=", "restart/5000/restart/30000/restart/60000"
     ) | Out-Null
 }
 

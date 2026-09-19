@@ -15,3 +15,10 @@ windows-service = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+runner_observability = [
+    "static/*.html",
+    "static/*.js",
+    "static/*.css",
+]

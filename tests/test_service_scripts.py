@@ -45,6 +45,19 @@ class ServiceScriptContractTests(unittest.TestCase):
         self.assertIn("nt authority\\localservice", lowered)
         self.assertIn("runner_observability.service run --config", lowered)
 
+    def test_sc_options_pass_names_and_values_as_separate_arguments(self) -> None:
+        for fragment in (
+            '"binPath=", $binPath',
+            '"start=", "auto"',
+            '"DisplayName=", "Runner Observability Monitor"',
+            '"obj=", $ServiceAccount',
+            '"reset=", "86400"',
+            '"actions=", "restart/5000/restart/30000/restart/60000"',
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, self.module_text)
+        self.assertNotIn('"start= auto"', self.module_text)
+
     def test_acl_rules_separate_read_only_and_modify_access(self) -> None:
         self.assertIn('-Access "R"', self.script_text)
         self.assertIn('(OI)(CI)(M)', self.module_text)

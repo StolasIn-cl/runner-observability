@@ -18,6 +18,32 @@ from runner_observability.service import (
 )
 
 
+class _FakeServiceManager:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object | None]] = []
+
+    def Initialize(self) -> None:
+        self.calls.append(("Initialize", None))
+
+    def PrepareToHostSingle(self, service_class: object) -> None:
+        self.calls.append(("PrepareToHostSingle", service_class))
+
+    def StartServiceCtrlDispatcher(self) -> None:
+        self.calls.append(("StartServiceCtrlDispatcher", None))
+
+
+class _FakeServiceApi:
+    def __init__(self) -> None:
+        self.servicemanager = _FakeServiceManager()
+        self.win32event = object()
+        self.win32service = object()
+        self.win32serviceutil = type(
+            "FakeWin32ServiceUtil",
+            (),
+            {"ServiceFramework": object},
+        )
+
+
 class ServiceConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="runner-observability-service-test-")
@@ -180,6 +206,24 @@ class MonitorChildSupervisorTests(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertEqual(captured.getvalue(), "service failed reason=windows_service_unavailable\n")
         self.assertNotIn(str(config_path), captured.getvalue())
+
+    def test_service_host_connects_to_scm_without_command_line_usage(self) -> None:
+        from runner_observability import service as service_module
+
+        with tempfile.TemporaryDirectory(prefix="runner-observability-service-host-test-") as directory:
+            config_path = Path(directory) / "service-config.json"
+            ServiceConfig(token_file="C:/secure/token.txt").write_atomic(config_path)
+            api = _FakeServiceApi()
+
+            result = service_module.run_service(config_path, service_api=api)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [name for name, _ in api.servicemanager.calls],
+            ["Initialize", "PrepareToHostSingle", "StartServiceCtrlDispatcher"],
+        )
+        hosted_class = api.servicemanager.calls[1][1]
+        self.assertEqual(hosted_class._svc_name_, "RunnerObservabilityMonitor")
 
 
 if __name__ == "__main__":

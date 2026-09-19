@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: runner-observability
+Version: 0.1.0
+Summary: Restricted v1 telemetry contract for runner observability
+Requires-Python: >=3.11
+Provides-Extra: windows-service
+Requires-Dist: pywin32>=306; platform_system == "Windows" and extra == "windows-service"
