@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>為什麼 Runner Observability 要做這麼多設定？</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Lesson 01 · Runner Observability</div>
+    <h1>為什麼完整架設要經過這麼多關卡？</h1>
+    <p class="lede">
+      你看到的不是七個互不相關的設定，而是同一條「Runner 把進度送到 Monitor」的路徑，
+      每一關都在排除一種不同的故障。
+    </p>
+  </header>
+
+  <div class="callout">
+    <strong>一句話版本：</strong>
+    這套系統就是「地址簿 → 大門 → 保全 → 加密通道 → API 櫃台 → 應用程式資料」。
+    內部公司網路會讓範圍比較單純，但不會讓這些層次消失。
+  </div>
+
+  <h2>先看完整路徑</h2>
+  <div class="flow" aria-label="Runner to Monitor network path">
+    <div class="flow-step"><strong>Runner</strong><small>要送出進度</small></div>
+    <div class="flow-step"><strong>名稱</strong><small>monitor-test.local</small></div>
+    <div class="flow-step"><strong>TCP</strong><small>8765 大門</small></div>
+    <div class="flow-step"><strong>TLS</strong><small>加密與身份</small></div>
+    <div class="flow-step"><strong>HTTP</strong><small>API 路徑</small></div>
+    <div class="flow-step"><strong>Token</strong><small>請求身份</small></div>
+    <div class="flow-step"><strong>Monitor</strong><small>儲存與投影</small></div>
+  </div>
+
+  <p>
+    想像你要把一份文件送到公司另一棟大樓：先查地址，再走到大樓，再通過入口，
+    進入加密的櫃台通道，找到正確窗口，出示識別證，最後櫃台才會接收文件。
+    任何一步失敗，下一步都不會有意義。
+  </p>
+
+  <h2>每一層到底在確認什麼？</h2>
+  <table>
+    <thead>
+      <tr><th>層次</th><th>它要回答的問題</th><th>你看到的測試</th><th>通過代表什麼</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Hostname / DNS</strong></td>
+        <td>「monitor-test.local」是哪台電腦？</td>
+        <td>hosts 或 DNS lookup</td>
+        <td>Runner 找到正確的 IP。這像查地址簿。</td>
+      </tr>
+      <tr>
+        <td><strong>TCP</strong></td>
+        <td>能不能連到 Monitor 的 8765 port？</td>
+        <td><code>Test-NetConnection</code></td>
+        <td>網路路徑、監聽狀態與防火牆至少允許這個連線。</td>
+      </tr>
+      <tr>
+        <td><strong>Firewall</strong></td>
+        <td>這個 port 是否被門禁擋住？</td>
+        <td>通常由 TCP 失敗間接發現</td>
+        <td>Monitor 的入口允許 Runner 進入。TCP 失敗不一定只代表 Firewall，也可能是 IP 錯或服務沒啟動。</td>
+      </tr>
+      <tr>
+        <td><strong>TLS / Certificate</strong></td>
+        <td>通道是否加密？Runner 連到的真的是這個 Monitor 嗎？</td>
+        <td><code>Invoke-WebRequest https://...</code></td>
+        <td>資料不以明文傳送，且憑證名稱和信任鏈符合請求。</td>
+      </tr>
+      <tr>
+        <td><strong>HTTP</strong></td>
+        <td>你找的是不是正確的 API？</td>
+        <td><code>/api/health</code>、<code>/v1/events</code></td>
+        <td>應用程式確實有回應，不只是 port 開著。</td>
+      </tr>
+      <tr>
+        <td><strong>Bearer token</strong></td>
+        <td>這個呼叫者是否被允許送資料？</td>
+        <td>Canary <code>Auth</code></td>
+        <td>錯 token 會被拒絕，正 token 可以恢復。</td>
+      </tr>
+      <tr>
+        <td><strong>Event / liveness</strong></td>
+        <td>Monitor 能否正確判斷 online、offline、recovery？</td>
+        <td>Canary <code>Smoke</code>、<code>OfflineRecovery</code></td>
+        <td>資料不只「送到」，還被正確投影成 dashboard 狀態。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>把你剛剛遇到的錯誤串起來</h2>
+  <div class="panel">
+    <h3>第一個問題：TCP 根本沒有到正確的電腦</h3>
+    <p>
+      Runner 查到的 <code>monitor-test.local</code> 是舊位址 <code>192.168.1.50</code>，
+      但 Monitor 實際位址是 <code>192.168.24.141</code>。所以 Runner 很努力地連線，
+      只是連到錯的地址；這時候 Monitor 本機明明在 Listen，Runner 仍然會失敗。
+    </p>
+    <p>
+      修正 hosts mapping 後，TCP 成功。這代表「地址簿」與「大門」已經通了，
+      但還沒有證明 HTTPS、API 或 token 正常。
+    </p>
+  </div>
+
+  <div class="panel">
+    <h3>第二個問題：TCP 通了，但 HTTPS 不信任這個身份</h3>
+    <p>
+      你用 IP 呼叫 HTTPS。TLS 憑證通常會把允許的 hostname/IP 寫在 SAN 裡；
+      目前測試憑證是給 <code>monitor-test.local</code> 與原本的測試 IP，
+      不等於「任何 IP 都可以使用」。另外，self-signed 憑證也必須被 Runner
+      放進信任的憑證存放區。
+    </p>
+    <p>
+      所以「TCP 成功」和「HTTPS 成功」並不矛盾：前者只看大門能不能打開，
+      後者還要驗證通道和身份。改用憑證對應的 hostname，並讓 Runner 信任該憑證後，
+      HTTPS health 才成功。
+    </p>
+  </div>
+
+  <h2>四個命令，各自只負責一件事</h2>
+  <pre><code>$monitorName = 'monitor-test.local'
+$port = 8765
+
+# 1. 名稱：查到哪個 IP
+Resolve-DnsName $monitorName
+
+# 2. TCP：8765 大門是否打得開
+Test-NetConnection -ComputerName $monitorName -Port $port -InformationLevel Detailed
+
+# 3. HTTPS + HTTP：服務是否真的回應 health
+Invoke-WebRequest -UseBasicParsing -Uri ("https://{0}:{1}/api/health" -f $monitorName, $port)
+
+# 4. 應用程式：送事件、驗證 dashboard 與 liveness
+.\scripts\Invoke-RunnerCanary.ps1 -Mode Smoke -Endpoint ("https://{0}:{1}" -f $monitorName, $port) -RunnerId '00000000-0000-0000-0000-000000000006' -TokenPath 'C:\runner-observability-secrets\monitor-token.txt'</code></pre>
+
+  <div class="callout warm">
+    <strong>注意：</strong>
+    <code>Test-NetConnection</code> 成功不代表 TLS 憑證正確；
+    <code>/api/health</code> 成功也不代表 bearer token、事件序號與 offline/recovery
+    狀態全部正確。這正是為什麼還需要 Canary。
+  </div>
+
+  <h2>為什麼 OfflineRecovery 要等很久？</h2>
+  <p>
+    它不是卡住，而是在刻意模擬「Runner 停止送 heartbeat」：
+    先送一個正常 heartbeat，等超過 liveness timeout，再確認 dashboard 變成
+    <code>offline</code> 且原因是 <code>heartbeat_timeout</code>，最後再送一個較新的
+    heartbeat，確認狀態可以恢復 online。預設等待約 601 秒，是為了越過 600 秒的
+    offline 判定門檻。
+  </p>
+
+  <h2>Dashboard 要在哪裡開？</h2>
+  <p>
+    PowerShell 視窗只是「啟動 Monitor 的地方」，不是 dashboard 的畫面。
+    Dashboard 是 Monitor 提供的網站首頁，根路徑是 <code>/</code>。請在
+    Monitor Host 或 Runner 上開瀏覽器，輸入：
+  </p>
+  <pre><code>https://monitor-test.local:8765/</code></pre>
+
+  <div class="callout">
+    <strong>請使用 hostname，不要優先使用 IP。</strong>
+    你的測試憑證是簽給 <code>monitor-test.local</code> 的；用
+    <code>https://192.168.24.141:8765/</code> 時，瀏覽器會把「網址中的 IP」
+    和「憑證中的身份」拿來比對，兩者不一致就可能顯示不安全。
+  </div>
+
+  <h3>如果瀏覽器仍然顯示「不安全」</h3>
+  <ol>
+    <li>先確認網址是 <code>https://monitor-test.local:8765/</code>，不是 IP。</li>
+    <li>確認「正在開瀏覽器的這台電腦」也能解析 hostname；hosts 修改只對修改過的電腦有效。</li>
+    <li>若使用 self-signed 測試憑證，將公開憑證匯入目前使用者的 Trusted Root store：</li>
+  </ol>
+  <pre><code>Import-Certificate -FilePath 'C:\runner-observability-secrets\monitor.crt' -CertStoreLocation 'Cert:\CurrentUser\Root'</code></pre>
+  <p>
+    若要讓這台電腦的所有使用者都信任，才使用
+    <code>Cert:\LocalMachine\Root</code>，並以系統管理員 PowerShell 執行。
+    只匯入 <code>.crt</code> 公開憑證，不要把 <code>.key</code> 複製到 Runner 或匯入瀏覽器。
+  </p>
+  <p>
+    測試環境可以在瀏覽器的進階畫面暫時選擇繼續，但那只是繞過警告；
+    正確的驗證方式仍是使用對的 hostname 並建立信任。不要把
+    <code>-SkipCertificateCheck</code> 當成正式設定。
+  </p>
+
+  <h3>用 PowerShell 確認 dashboard API</h3>
+  <p>
+    首頁會由 JavaScript 自動呼叫 <code>/api/dashboard</code>。因此可以把問題拆成
+    「網站首頁」和「dashboard JSON」兩步：
+  </p>
+  <pre><code>Invoke-WebRequest -UseBasicParsing -Uri 'https://monitor-test.local:8765/api/dashboard'</code></pre>
+  <p>
+    這個 endpoint 目前是 monitor 的 dashboard 讀取介面，不需要把 bearer token
+    放進瀏覽器網址；token 只用於 Runner 對 <code>/v1/events</code> 的送資料請求。
+  </p>
+
+  <h2>最實用的故障判斷表</h2>
+  <table>
+    <thead>
+      <tr><th>現象</th><th>先想哪一層？</th><th>下一步</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>hostname 找不到</td>
+        <td>名稱 / hosts / DNS</td>
+        <td><code>Resolve-DnsName</code>，確認 mapping 是否指向目前 Monitor IP。</td>
+      </tr>
+      <tr>
+        <td>TCP False</td>
+        <td>IP、路由、Firewall、Listen</td>
+        <td>在 Monitor 看 <code>Get-NetTCPConnection -LocalPort 8765</code>，再核對 Runner 查到的 IP。</td>
+      </tr>
+      <tr>
+        <td>TCP True，但 SSL trust 失敗</td>
+        <td>TLS 名稱或憑證信任</td>
+        <td>用憑證中的 hostname；確認 Runner 已信任測試憑證。</td>
+      </tr>
+      <tr>
+        <td>HTTPS health 成功，但 Canary Auth 失敗</td>
+        <td>token / API auth</td>
+        <td>確認 token 檔案沒有多餘空白，且 Monitor 啟動時使用相同 token。</td>
+      </tr>
+      <tr>
+        <td>Smoke 成功，但 OfflineRecovery 未完成</td>
+        <td>這通常是等待中的正常狀態</td>
+        <td>不要重跑或送額外 heartbeat；等 timeout 與 recovery 階段結束。</td>
+      </tr>
+      <tr>
+        <td>PowerShell health 成功，但瀏覽器顯示不安全</td>
+        <td>瀏覽器使用的 hostname、憑證信任或快取</td>
+        <td>改用 <code>monitor-test.local</code>，確認瀏覽器所在電腦已匯入公開憑證。</td>
+      </tr>
+      <tr>
+        <td>首頁開得起來，但沒有 Runner 資料</td>
+        <td>Monitor 收到的事件或 dashboard API</td>
+        <td>重新整理頁面，再查 <code>/api/dashboard</code>；不要只看 port 是否開啟。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>小測驗：先猜，再看答案</h2>
+  <div class="panel quiz">
+    <p><strong>1. TCP 是 True，HTTPS 卻出現 SSL trust error，哪一層還沒通？</strong></p>
+    <button onclick="showAnswer('a1')">A. TLS 憑證/信任層</button>
+    <button onclick="showAnswer('a1')">B. 代表一定是資料庫壞了</button>
+    <div id="a1" class="answer">答案：A。TCP 只證明可以碰到 port；TLS 還要驗證加密通道和伺服器身份。</div>
+
+    <p><strong>2. hostname 指向舊 IP，但 Monitor 在新 IP 上 Listen，最可能發生什麼？</strong></p>
+    <button onclick="showAnswer('a2')">A. Runner 會連到錯的電腦或根本連不到</button>
+    <button onclick="showAnswer('a2')">B. token 會自動修正 IP</button>
+    <div id="a2" class="answer">答案：A。token 在應用程式層，無法修正名稱解析或路由。</div>
+
+    <p><strong>3. OfflineRecovery 等待中，應該先做什麼？</strong></p>
+    <button onclick="showAnswer('a3')">A. 等它完成 timeout 與 recovery 階段</button>
+    <button onclick="showAnswer('a3')">B. 不斷送 heartbeat 讓它快一點</button>
+    <div id="a3" class="answer">答案：A。額外 heartbeat 會打斷「模擬離線」的條件。</div>
+  </div>
+
+  <h2>延伸閱讀與專案入口</h2>
+  <ul class="source-list">
+    <li><a href="https://learn.microsoft.com/en-us/powershell/module/nettcpip/test-netconnection?view=windowsserver2025-ps">Microsoft Learn：Test-NetConnection</a> — TCP port diagnostic 的官方說明。</li>
+    <li><a href="https://learn.microsoft.com/en-us/windows/win32/dns/dns-overview">Microsoft Learn：DNS overview</a> — 名稱如何對應到 IP。</li>
+    <li><a href="https://learn.microsoft.com/en-us/powershell/module/pki/import-certificate?view=windowsserver2025-ps">Microsoft Learn：Import-Certificate</a> — Windows 憑證存放區匯入方式。</li>
+    <li><a href="https://docs.python.org/3/library/ssl.html">Python ssl documentation</a> — 本專案 TLS server/client 的底層概念。</li>
+    <li><a href="../reference/runner-observability-network-cheatsheet.html">本課程的網路排查速查表</a></li>
+    <li><a href="../docs/runbook.md">專案 runbook</a></li>
+    <li><a href="../scripts/Invoke-RunnerCanary.ps1">Invoke-RunnerCanary.ps1</a></li>
+  </ul>
+
+  <p class="footer-note">
+    這是第一課。看完後，如果你想，我可以再用同樣方式拆解「TLS 憑證到底如何驗證」、
+    「OfflineRecovery 為什麼要 601 秒」，或「一個 heartbeat 如何變成 dashboard 上的 online」。
+  </p>
+</main>
+<script>
+  function showAnswer(id) {
+    document.getElementById(id).classList.add("show");
+  }
+</script>
+</body>
+</html>

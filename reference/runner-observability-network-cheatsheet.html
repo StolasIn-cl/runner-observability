@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Runner Observability 網路排查速查表</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Runner Observability · Quick reference</div>
+    <h1>網路排查速查表</h1>
+    <p class="lede">由外而內：先確認「找得到」，再確認「連得到」，最後確認「服務真的懂你的資料」。</p>
+  </header>
+
+  <div class="callout">
+    <strong>最短判斷法：</strong>
+    <code>Test-NetConnection</code> 通過，只代表 TCP 大門打得開；還要用
+    <code>Invoke-WebRequest /api/health</code> 驗證 HTTPS/HTTP，最後才用 Canary 驗證 token、事件與 liveness。
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>層</th><th>它在問什麼？</th><th>命令</th><th>失敗時先看什麼？</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>名稱</td>
+        <td>這個名稱指向哪台電腦？</td>
+        <td><code>Resolve-DnsName monitor-test.local</code></td>
+        <td>hosts/DNS 是否仍指向舊 IP。</td>
+      </tr>
+      <tr>
+        <td>TCP</td>
+        <td>Runner 能否打開 Monitor 的 8765 大門？</td>
+        <td><code>Test-NetConnection monitor-test.local -Port 8765</code></td>
+        <td>目標 IP、服務是否 listen、Windows Firewall、路由。</td>
+      </tr>
+      <tr>
+        <td>TLS</td>
+        <td>這條 HTTPS 通道是否加密，且對方身份可信？</td>
+        <td><code>Invoke-WebRequest https://monitor-test.local:8765/api/health</code></td>
+        <td>憑證 SAN 是否含 hostname、Runner 是否信任憑證。</td>
+      </tr>
+      <tr>
+        <td>HTTP</td>
+        <td>API 路徑是否正確，服務是否有回應？</td>
+        <td><code>/api/health</code>、<code>/api/dashboard</code></td>
+        <td>URL、port、scheme、服務 log。</td>
+      </tr>
+      <tr>
+        <td>Auth</td>
+        <td>這個 Runner 是否持有正確 token？</td>
+        <td><code>Invoke-RunnerCanary.ps1 -Mode Auth</code></td>
+        <td>token 檔案內容、Bearer header、服務啟動參數。</td>
+      </tr>
+      <tr>
+        <td>資料與 liveness</td>
+        <td>事件是否被接收、投影，且離線後能恢復？</td>
+        <td><code>Smoke</code>、<code>OfflineRecovery</code></td>
+        <td>RunnerId、序號/epoch、timeout、database 與 dashboard。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="panel">
+    <h2>建議順序</h2>
+    <ol>
+      <li>在 Monitor 確認 <code>0.0.0.0:8765</code> 正在 Listen。</li>
+      <li>在 Runner 確認 hostname 解析到目前 Monitor IP。</li>
+      <li>在 Runner 執行 TCP 測試。</li>
+      <li>使用 hostname（不要先改成 IP）執行 HTTPS health。</li>
+      <li>在瀏覽器開啟 <code>https://monitor-test.local:8765/</code> 查看 dashboard。</li>
+      <li>最後才跑 Smoke、Auth、OfflineRecovery、NetworkFailure。</li>
+    </ol>
+  </div>
+
+  <div class="callout warm">
+    <strong>本次案例：</strong>名稱曾指向 <code>192.168.1.50</code>，但 Monitor 實際位址是
+    <code>192.168.24.141</code>；修正 mapping 後 TCP 通過。接著使用 IP 做 HTTPS 時，
+    憑證名稱/信任不一致；改用憑證中的 hostname 並讓 Runner 信任憑證後，HTTPS 也通過。
+  </div>
+
+  <div class="callout warning">
+    <strong>瀏覽器顯示「不安全」：</strong>先改用
+    <code>https://monitor-test.local:8765/</code>，再確認瀏覽器所在電腦信任
+    <code>monitor.crt</code>。使用 IP、未信任 self-signed 憑證，或 hostname 不在
+    憑證 SAN 中，都可能觸發瀏覽器警告。
+  </div>
+
+  <p class="footer-note">
+    這張速查表只包含診斷方向，不包含任何 token、private key 或憑證內容。
+  </p>
+</main>
+</body>
+</html>
