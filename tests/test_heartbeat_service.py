@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from io import StringIO
+from unittest.mock import patch
 
 from runner_observability.heartbeat import HeartbeatConfig
 from runner_observability.heartbeat_service import (
@@ -20,6 +21,32 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "Install-RunnerHeartbeatService.ps1"
 MODULE = ROOT / "scripts" / "RunnerHeartbeat.Service.psm1"
 RUNBOOK = ROOT / "docs" / "runbook.md"
+
+
+class _FakeServiceManager:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object | None]] = []
+
+    def Initialize(self) -> None:
+        self.calls.append(("Initialize", None))
+
+    def PrepareToHostSingle(self, service_class: object) -> None:
+        self.calls.append(("PrepareToHostSingle", service_class))
+
+    def StartServiceCtrlDispatcher(self) -> None:
+        self.calls.append(("StartServiceCtrlDispatcher", None))
+
+
+class _FakeServiceApi:
+    def __init__(self) -> None:
+        self.servicemanager = _FakeServiceManager()
+        self.win32event = object()
+        self.win32service = object()
+        self.win32serviceutil = type(
+            "FakeWin32ServiceUtil",
+            (),
+            {"ServiceFramework": object},
+        )
 
 
 class HeartbeatServiceTests(unittest.TestCase):
@@ -57,20 +84,47 @@ class HeartbeatServiceTests(unittest.TestCase):
                 state_file="C:/secure/runner-state.json",
             ).write_atomic(path)
             captured = StringIO()
-            with redirect_stderr(captured):
-                result = run_service(path, service_api=None)
+            with patch("runner_observability.heartbeat_service._load_service_api", return_value=None):
+                with redirect_stderr(captured):
+                    result = run_service(path, service_api=None)
 
         self.assertEqual(result, 2)
         self.assertEqual(captured.getvalue(), f"service failed reason={REASON_WINDOWS_SERVICE_UNAVAILABLE}\n")
+
+    def test_service_host_connects_to_scm_without_command_line_usage(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="runner-heartbeat-service-host-") as directory:
+            path = Path(directory) / "heartbeat-config.json"
+            HeartbeatConfig(
+                endpoint="https://monitor.example.test:8765",
+                token_file="C:/secure/token.txt",
+                runner_id="20000000-0000-4000-8000-000000000001",
+                state_file="C:/secure/runner-state.json",
+            ).write_atomic(path)
+            api = _FakeServiceApi()
+
+            result = run_service(path, service_api=api)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [name for name, _ in api.servicemanager.calls],
+            ["Initialize", "PrepareToHostSingle", "StartServiceCtrlDispatcher"],
+        )
+        hosted_class = api.servicemanager.calls[1][1]
+        self.assertEqual(hosted_class._svc_name_, "RunnerObservabilityHeartbeat")
 
     def test_power_shell_lifecycle_contract_is_secret_safe(self) -> None:
         self.assertTrue(SCRIPT.is_file())
         self.assertTrue(MODULE.is_file())
         source = (SCRIPT.read_text(encoding="utf-8") + MODULE.read_text(encoding="utf-8")).lower()
-        for term in ("install", "start", "stop", "status", "restart", "uninstall", "tokenpath", "statepath", "endpoint", "start= auto", "sc.exe"):
+        for term in ("install", "start", "stop", "status", "restart", "uninstall", "tokenpath", "statepath", "endpoint", "start=", "sc.exe"):
             self.assertIn(term, source)
         self.assertIn("nt authority\\localservice", source)
         self.assertIn("heartbeat_service run --config", source)
+        self.assertIn('"binpath="', source)
+        self.assertIn('"obj="', source)
+        self.assertIn('"failure"', source)
+        self.assertIn("$backuppath", source)
+        self.assertNotIn("replace($temporarypath, $path, $null)", source)
         self.assertNotIn("--token ", source)
 
     def test_runbook_documents_runner_heartbeat_service(self) -> None:

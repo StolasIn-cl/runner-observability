@@ -30,11 +30,12 @@ function Write-RunnerHeartbeatConfigAtomic {
     }
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
     $temporaryPath = Join-Path $parent ("." + (Split-Path -Leaf $Path) + "." + $PID + ".tmp")
+    $backupPath = Join-Path $parent ("." + (Split-Path -Leaf $Path) + "." + [guid]::NewGuid().ToString("N") + ".bak")
     try {
         $json = $Configuration | ConvertTo-Json -Depth 5
         [System.IO.File]::WriteAllText($temporaryPath, $json, [System.Text.UTF8Encoding]::new($false))
         if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            [System.IO.File]::Replace($temporaryPath, $Path, $null)
+            [System.IO.File]::Replace($temporaryPath, $Path, $backupPath)
         }
         else {
             [System.IO.File]::Move($temporaryPath, $Path)
@@ -46,6 +47,9 @@ function Write-RunnerHeartbeatConfigAtomic {
     finally {
         if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
             Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -101,13 +105,13 @@ function Register-RunnerHeartbeatService {
 
     $binPath = '"{0}" -m runner_observability.heartbeat_service run --config "{1}"' -f $PythonPath, $ConfigPath
     Invoke-RunnerHeartbeatNativeCommand -FilePath "sc.exe" -ArgumentList @(
-        "create", $ServiceName, "binPath= $binPath", "start= auto", "DisplayName= Runner Observability Heartbeat"
+        "create", $ServiceName, "binPath=", $binPath, "start=", "auto", "DisplayName=", "Runner Observability Heartbeat"
     ) | Out-Null
     Invoke-RunnerHeartbeatNativeCommand -FilePath "sc.exe" -ArgumentList @(
-        "config", $ServiceName, "obj= $ServiceAccount", "start= auto"
+        "config", $ServiceName, "obj=", $ServiceAccount, "start=", "auto"
     ) | Out-Null
     Invoke-RunnerHeartbeatNativeCommand -FilePath "sc.exe" -ArgumentList @(
-        "failure", $ServiceName, "reset= 86400", "actions= restart/5000/restart/30000/restart/60000"
+        "failure", $ServiceName, "reset=", "86400", "actions=", "restart/5000/restart/30000/restart/60000"
     ) | Out-Null
 }
 

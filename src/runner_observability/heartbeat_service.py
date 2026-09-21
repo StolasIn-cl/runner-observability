@@ -65,7 +65,13 @@ def run_service(config_path: Path | str, *, service_api: Any | None = None) -> i
         print(f"service failed reason={REASON_WINDOWS_SERVICE_UNAVAILABLE}", file=sys.stderr)
         return 2
     service_class = _make_service_class(config, api)
-    api.win32serviceutil.HandleCommandLine(service_class, argv=[sys.argv[0]])
+    # The service is launched directly by SCM through ``python -m``.  The
+    # pywin32 command-line helper expects to install/control a generated
+    # pythonservice.exe host and does not connect this process to SCM, which
+    # causes SCM start requests to time out with error 1053.
+    api.servicemanager.Initialize()
+    api.servicemanager.PrepareToHostSingle(service_class)
+    api.servicemanager.StartServiceCtrlDispatcher()
     return 0
 
 
