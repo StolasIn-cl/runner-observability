@@ -193,6 +193,7 @@ class PromeoCiIntegrationTests(unittest.TestCase):
                 dashboard = _json_get(f"{endpoint}/api/dashboard")
                 self.assertFalse(dashboard["health"]["degraded"])
                 self.assertEqual(len(dashboard["runners"]), 1)
+                self.assertEqual(len(dashboard["active_runners"]), 1)
                 current_job = dashboard["runners"][0]["current_job"]
                 self.assertEqual(current_job["workflow_run_id"], WORKFLOW_RUN_ID)
                 self.assertEqual(current_job["outcome"], "succeeded")

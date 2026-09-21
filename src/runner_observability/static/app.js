@@ -191,7 +191,8 @@
   function render() {
     var snapshot = state.snapshot;
     if (!snapshot) return;
-    var runners = snapshot.runners;
+    var allRunners = snapshot.runners || [];
+    var runners = snapshot.active_runners || allRunners.filter(function (runner) { return runner.liveness === "online"; });
     if (!state.selectedRunnerId && runners.length) state.selectedRunnerId = runners[0].runner_id;
     var selected = runners.filter(function (r) { return r.runner_id === state.selectedRunnerId; })[0] || runners[0];
 
@@ -213,7 +214,7 @@
       '<div class="surface feed-panel"><h3>Live event feed</h3>' + eventFeedPanel(snapshot.event_feed) + "</div>" +
       "</aside>" +
       "</div>" +
-      historySection(runners) +
+      historySection(allRunners) +
       "</div>";
 
     Array.prototype.forEach.call(app.querySelectorAll("[data-runner-id]"), function (el) {

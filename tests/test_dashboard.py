@@ -104,6 +104,31 @@ class DashboardSnapshotTests(unittest.TestCase):
         self.assertEqual(runner["liveness"], "online")
         self.assertIsNone(runner["current_job"])
 
+    def test_snapshot_separates_current_runners_from_retained_offline_history(self) -> None:
+        stale_runner = "60000000-0000-4000-8000-0000000000f1"
+        self.store.ingest(heartbeat("60000000-0000-4000-8000-0000000000f0", 1, 600), at(600))
+        self.store.ingest(
+            envelope(
+                "runner.heartbeat",
+                "60000000-0000-4000-8000-0000000000f2",
+                1,
+                0,
+                runner_id=stale_runner,
+            ),
+            at(0),
+        )
+
+        snapshot = self.snapshot(601)
+
+        self.assertEqual(
+            {item["runner_id"] for item in snapshot["runners"]},
+            {RUNNER, stale_runner},
+        )
+        self.assertEqual(
+            [item["runner_id"] for item in snapshot["active_runners"]],
+            [RUNNER],
+        )
+
     def test_idle_to_running_to_idle_keeps_the_last_known_job_and_outcome(self) -> None:
         self.store.ingest(job_started("60000000-0000-4000-8000-000000000002", 1, 0), at(0))
         mid_snapshot = self.snapshot(1)

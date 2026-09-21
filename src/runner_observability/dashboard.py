@@ -115,7 +115,7 @@ _PHASE_UNIT_LABELS: Mapping[str, str] = {
 
 
 def dashboard_snapshot(store: Store, now: datetime | str) -> dict[str, Any]:
-    """Return one command-center snapshot of every known runner and its job.
+    """Return one command-center snapshot of known runners and their jobs.
 
     Not read-only: refreshes liveness against the caller-supplied,
     monitor-owned ``now`` first (see the module docstring), so a dashboard
@@ -125,12 +125,17 @@ def dashboard_snapshot(store: Store, now: datetime | str) -> dict[str, Any]:
     store.refresh_liveness(now)
     window = store.recent_events(DASHBOARD_EVENT_WINDOW)
     health = store.health()
+    runners = [_runner_view(store, row, window) for row in store.list_runners()]
     return {
         "generated_at": _iso(now),
         "health": {"degraded": health["degraded"], "reasons": list(health["reasons"])},
         "history_filter_keys": list(HISTORY_FILTER_KEYS),
         "incidents": store.incidents(),
-        "runners": [_runner_view(store, row, window) for row in store.list_runners()],
+        # Keep all rows for history and diagnostics, but give the live rail a
+        # projection that excludes retained offline identities from old
+        # process-local runner IDs.
+        "runners": runners,
+        "active_runners": [runner for runner in runners if runner["liveness"] == "online"],
         "event_feed": _event_feed(window),
     }
 
