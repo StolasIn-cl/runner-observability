@@ -418,6 +418,73 @@ Then confirm in the dashboard that:
 If this verification fails, stop and follow the troubleshooting section in
 [`AGENTS.md`](AGENTS.md) and the diagnostic table in [`docs/runbook.md`](docs/runbook.md).
 
+## Runner Heartbeat Windows Service runtime boundary (issue #9)
+
+The Runner Heartbeat Service runs as `NT AUTHORITY\LocalService` by default.
+This is a separate Windows security context from the interactive Runner user.
+Installing Python and `runner_observability` successfully for the interactive
+user does not prove that `LocalService` can read and execute the same runtime.
+
+Prefer a machine-scoped Python runtime or virtual environment under a managed
+path such as `C:\runner-observability-agent\venv`. The runtime, its package
+files, and every parent directory needed to reach them must be readable and
+executable by `LocalService`. The heartbeat install script grants the service
+account access to the config, token, and state paths; it does not grant access
+to a per-user Python installation.
+
+If a per-user Python runtime is used temporarily, verify the exact service
+binary path and package location before changing ACLs. Grant only traverse
+access on the confirmed parent directories and read/execute access on the
+confirmed Python runtime; do not grant write or full-control access and never
+print the token:
+
+```powershell
+$pythonPath = 'C:\Users\<runner-user>\AppData\Local\Programs\Python\Python311\python.exe'
+$pythonRoot = Split-Path -Parent $pythonPath
+$localService = '*S-1-5-19' # NT AUTHORITY\LocalService
+
+& $pythonPath -c "import runner_observability.heartbeat_service as m; print(m.__file__)"
+if ($LASTEXITCODE -ne 0) {
+    throw 'The configured Python cannot import runner_observability.heartbeat_service'
+}
+
+# Replace these with the exact parents confirmed on the target Runner.
+$traversePaths = @(
+    'C:\Users\<runner-user>',
+    'C:\Users\<runner-user>\AppData',
+    'C:\Users\<runner-user>\AppData\Local',
+    'C:\Users\<runner-user>\AppData\Local\Programs',
+    'C:\Users\<runner-user>\AppData\Local\Programs\Python'
+)
+foreach ($path in $traversePaths) {
+    icacls.exe $path /grant ("{0}:(X)" -f $localService) /C
+    if ($LASTEXITCODE -ne 0) { throw "Failed to grant traverse access: $path" }
+}
+
+icacls.exe $pythonRoot /grant ("{0}:(OI)(CI)(RX)" -f $localService) /T /C
+if ($LASTEXITCODE -ne 0) { throw "Failed to grant Python runtime access: $pythonRoot" }
+```
+
+The `Install` action registers the service but does not start it. Start and
+verify it explicitly:
+
+```powershell
+./scripts/Install-RunnerHeartbeatService.ps1 -Action Start
+sc.exe queryex RunnerObservabilityHeartbeat
+```
+
+The expected result is `STATE : 4 RUNNING` with a non-zero PID. If `sc start`
+returns error 5 (`Access is denied`) while the service is configured for
+`LocalService`, inspect the Python executable/package ACLs before changing the
+service account. Do not delete the service, reset `runner-id.txt`, or expose
+the token as a command-line argument.
+
+On 2026-09-21, `PROMEORUNNER-DT` reproduced this boundary: registration and
+config ACLs succeeded, but the per-user Python runtime could not be started by
+`LocalService`. After the runtime traverse/read-execute ACLs were corrected,
+the service reached `RUNNING`, the dashboard displayed the heartbeat, and a
+real CI test completed successfully.
+
 ## Existing Runner update and component restart rules
 
 The two recent fixes are deployed independently:
