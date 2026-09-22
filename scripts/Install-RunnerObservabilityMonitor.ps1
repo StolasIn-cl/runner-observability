@@ -249,6 +249,9 @@ function Assert-MonitorCertificateConfiguration {
 
 function Invoke-MonitorInventory {
     $configRoot = Split-Path -Parent $ConfigPath
+    # The Monitor config directory is not a managed Runner release root;
+    # an existing service-config.json is safe to inspect and atomically
+    # replace only after the exact Monitor service absence check.
     $inventory = Get-RunnerObservabilityInventory `
         -CandidateRunnerRoots @() `
         -CandidateInstallRoots @($configRoot) `
@@ -257,9 +260,6 @@ function Invoke-MonitorInventory {
     Assert-RunnerObservabilityInventoryGate `
         -Inventory $inventory `
         -InstallRoot $configRoot `
-        # The Monitor config directory is not a managed Runner release root;
-        # an existing service-config.json is safe to inspect and atomically
-        # replace only after the exact Monitor service absence check.
         -Operation "Troubleshooting" `
         -Role "Monitor" | Out-Null
     return $inventory

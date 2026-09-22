@@ -661,6 +661,7 @@ Export-ModuleMember -Function @(
     "Set-RunnerObservabilityFileAcl",
     "Set-RunnerObservabilityDirectoryAcl",
     "Set-RunnerObservabilityRuntimeAcl",
+    "Test-RunnerObservabilityMonitorIp",
     "Set-RunnerObservabilityHostsMapping",
     "Set-RunnerObservabilityMachineEnvironment",
     "Wait-RunnerObservabilityServiceState",
