@@ -48,6 +48,15 @@ if ([string]::IsNullOrWhiteSpace($StatePath)) {
     $StatePath = Join-Path $InstallRoot "state\heartbeat.json"
 }
 $configPath = Join-Path $InstallRoot "heartbeat-config.json"
+$runnerIdOverride = $null
+$parsedRunnerId = [guid]::Empty
+if (-not [string]::IsNullOrWhiteSpace($PSBoundParameters["RunnerId"]) -and
+    [guid]::TryParse($RunnerId, [ref]$parsedRunnerId)) {
+    # Keep the stable file under the managed install root while accepting the
+    # existing heartbeat installer convention of a UUID-valued -RunnerId.
+    $runnerIdOverride = $RunnerId
+    $RunnerId = Join-Path $InstallRoot "runner-id.txt"
+}
 
 function New-RunnerRoleError {
     param([Parameter(Mandatory = $true)][string]$Reason)
@@ -105,6 +114,14 @@ function Assert-RunnerEndpoint {
     if (-not [string]::IsNullOrWhiteSpace($MonitorHost) -and ($uri.Host -ine $MonitorHost)) {
         throw (New-RunnerRoleError -Reason "endpoint_host_mismatch")
     }
+    if (-not [string]::IsNullOrWhiteSpace($uri.Query) -or
+        -not [string]::IsNullOrWhiteSpace($uri.Fragment) -or
+        ($uri.AbsolutePath -notin @("", "/", "/v1/events"))) {
+        throw (New-RunnerRoleError -Reason "endpoint_path_invalid")
+    }
+    if ($uri.AbsolutePath -ieq "/v1/events") {
+        $script:Endpoint = $uri.GetLeftPart([System.UriPartial]::Authority)
+    }
 }
 
 function Assert-RunnerMonitorAddress {
@@ -138,10 +155,13 @@ function Ensure-RunnerId {
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
     $existing = Get-RunnerIdValue
     if ($null -ne $existing) {
+        if (($null -ne $runnerIdOverride) -and ($existing -ine $runnerIdOverride)) {
+            throw (New-RunnerRoleError -Reason "runner_id_mismatch")
+        }
         Set-RunnerObservabilityFileAcl -Path $RunnerId -ServiceAccount $ServiceAccount
         return $existing
     }
-    $value = [guid]::NewGuid().ToString()
+    $value = if ($null -ne $runnerIdOverride) { $runnerIdOverride } else { [guid]::NewGuid().ToString() }
     $temporaryPath = Join-Path $parent ("." + (Split-Path -Leaf $RunnerId) + "." + [guid]::NewGuid().ToString("N") + ".tmp")
     try {
         [IO.File]::WriteAllBytes($temporaryPath, [byte[]]@())
@@ -394,6 +414,7 @@ catch {
     $knownReasons = @(
         "endpoint_required",
         "invalid_endpoint",
+        "endpoint_path_invalid",
         "insecure_endpoint",
         "endpoint_host_mismatch",
         "monitor_host_invalid",
@@ -410,6 +431,7 @@ catch {
         "python_import_failed",
         "install_root_inspect_before_use",
         "runner_id_invalid",
+        "runner_id_mismatch",
         "runner_id_path_invalid",
         "runner_id_write_failed",
         "token_file_missing",
