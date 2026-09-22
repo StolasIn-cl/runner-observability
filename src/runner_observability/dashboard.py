@@ -267,6 +267,11 @@ def _phase_view(display_id: str, progress: Mapping[str, Any], item: Mapping[str,
         "state": progress["state"],
         "determinate": progress["determinate"],
         "total": progress["total"],
+        # The producer's `completed` field is recovered-count semantics on
+        # rerun finish events. `pending` consistently identifies work that
+        # has not been processed yet, so the dashboard's display count is
+        # derived from total minus pending.
+        "processed": max(0, progress["total"] - progress["pending"]),
         "completed": progress["completed"],
         "failed": progress["failed"],
         "pending": progress["pending"],

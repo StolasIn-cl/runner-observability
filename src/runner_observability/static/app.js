@@ -66,14 +66,14 @@
   }
 
   function phaseRow(stageId, phase) {
-    var pct = phase.determinate && phase.total > 0 ? Math.round((phase.completed / phase.total) * 100) : null;
+    var pct = phase.determinate && phase.total > 0 ? Math.round((phase.processed / phase.total) * 100) : null;
     var fillClass = phase.state === "failed" ? "failed" : phase.state === "completed" ? "done" : "";
     var caption = phase.determinate
-      ? phase.completed + " / " + phase.total + " " + phase.unit_label
+      ? phase.processed + " / " + phase.total + " " + phase.unit_label
       : "indeterminate";
-    // v1's progress schema has no dedicated safe/unsafe/skipped fields; show
-    // only what the event actually carries (completed/total/failed/pending)
-    // rather than fabricate a derived count the sender never asserted.
+    // `completed` may mean recovered units on a rerun finish event. The
+    // dashboard displays processed work as total minus pending, while
+    // keeping failed as the raw unresolved count.
     var breakdown = phase.failed > 0
       ? '<div class="phase-caption">failed/unsafe so far: ' + phase.failed + "</div>"
       : "";

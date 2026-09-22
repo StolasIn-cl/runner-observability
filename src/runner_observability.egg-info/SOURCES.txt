@@ -36,6 +36,7 @@ tests/test_history.py
 tests/test_http.py
 tests/test_ingest.py
 tests/test_package_metadata.py
+tests/test_promeo_ci_integration.py
 tests/test_resilience.py
 tests/test_serve_cli.py
 tests/test_service.py
