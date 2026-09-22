@@ -3,20 +3,21 @@
    rail + now-panel + incidents/feed) from the PERS-03 design ticket. */
 
 :root {
-  --bg: #f4f7fb;
-  --surface: #ffffff;
-  --surface-soft: #eef3f8;
-  --ink: #132238;
-  --muted: #64748b;
-  --line: #d9e2ec;
-  --blue: #2563eb;
-  --blue-soft: #dbeafe;
-  --green: #138a5b;
-  --green-soft: #d9f8e9;
-  --amber: #b46900;
-  --amber-soft: #fff1cf;
-  --red: #c13737;
-  --red-soft: #ffe0e0;
+  color-scheme: dark;
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-soft: #21262d;
+  --ink: #e6edf3;
+  --muted: #8b949e;
+  --line: #30363d;
+  --blue: #58a6ff;
+  --blue-soft: #1f3a5f;
+  --green: #3fb950;
+  --green-soft: #183a24;
+  --amber: #d29922;
+  --amber-soft: #3a2d10;
+  --red: #f85149;
+  --red-soft: #3d1f24;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
@@ -47,10 +48,10 @@ h3 { font-size: 14px; margin: 0 0 6px; }
 .degraded-banner {
   margin: 0 0 20px;
   padding: 12px 16px;
-  border: 1px solid #f0b5b5;
+  border: 1px solid var(--red);
   border-radius: 12px;
-  color: #7e2929;
-  background: #fff4f4;
+  color: var(--red);
+  background: var(--red-soft);
   font-size: 13px;
 }
 .degraded-banner strong { color: var(--red); }
@@ -110,7 +111,7 @@ h3 { font-size: 14px; margin: 0 0 6px; }
 .phase-grid { display: grid; gap: 8px; margin: 16px 0; }
 .phase-row { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
 .phase-row .phase-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; margin-bottom: 6px; }
-.progress-track { height: 6px; border-radius: 99px; background: #e7edf4; overflow: hidden; }
+.progress-track { height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
 .progress-fill { height: 100%; background: var(--blue); }
 .progress-fill.done { background: var(--green); }
 .progress-fill.failed { background: var(--red); }
@@ -120,8 +121,8 @@ h3 { font-size: 14px; margin: 0 0 6px; }
 .fact-box { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
 .fact-box .fact-label { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
 .fact-box .fact-value { font-size: 13px; font-weight: 700; }
-.fact-box.fallback { border-color: #efd69b; background: #fffaf0; }
-.fact-box.hint { border-color: #efd69b; background: #fffaf0; color: var(--amber); }
+.fact-box.fallback { border-color: var(--amber); background: var(--amber-soft); }
+.fact-box.hint { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
 
 .action-row { margin: 14px 0; font-size: 12px; font-weight: 700; }
 
@@ -141,11 +142,16 @@ h3 { font-size: 14px; margin: 0 0 6px; }
 
 .history-section { margin-top: 24px; padding: 18px; }
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
-.filters select, .filters input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; }
+.filters select, .filters input, .filters button { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--ink); }
+.filters button, .history-pagination button { cursor: pointer; }
+.filters button:disabled, .history-pagination button:disabled { cursor: not-allowed; opacity: .45; }
 .filters label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 table.history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.history-table th { text-align: left; padding: 0 10px 8px; color: var(--muted); font-size: 10px; text-transform: uppercase; }
 table.history-table td { padding: 10px; border-top: 1px solid var(--line); vertical-align: top; }
+.history-pagination { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 14px; }
+.history-pagination button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--ink); }
+.history-page { color: var(--muted); font-size: 12px; }
 
 @media (max-width: 1050px) {
   .command-layout { grid-template-columns: 1fr; }

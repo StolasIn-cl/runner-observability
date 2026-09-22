@@ -11,6 +11,8 @@
     selectedRunnerId: null,
     historyFilters: { runner_id: "", repository: "", workflow_run_id: "", outcome: "", received_after: "", received_before: "" },
     historyEvents: [],
+    historyPage: 1,
+    historyHasNext: false,
   };
 
   function badgeClass(kind, value) {
@@ -47,6 +49,10 @@
     return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
     });
+  }
+
+  function runnerAlias(runnerId) {
+    return "runner-" + String(runnerId || "").slice(0, 8);
   }
 
   function actionsLink(runUrl) {
@@ -101,8 +107,6 @@
   function jobTimeline(entries) {
     if (!entries.length) return '<p class="empty-note">No events recorded for this job yet.</p>';
     var items = entries
-      .slice()
-      .reverse()
       .map(function (entry) {
         return (
           "<li><time>received " + escapeHtml(entry.received_at) + " &middot; occurred " + escapeHtml(entry.occurred_at) + "</time>" +
@@ -226,6 +230,20 @@
 
     var applyButton = document.getElementById("history-apply");
     if (applyButton) applyButton.addEventListener("click", applyHistoryFilters);
+    var previousButton = document.getElementById("history-prev");
+    if (previousButton) previousButton.addEventListener("click", function () {
+      if (state.historyPage > 1) {
+        state.historyPage -= 1;
+        loadHistory();
+      }
+    });
+    var nextButton = document.getElementById("history-next");
+    if (nextButton) nextButton.addEventListener("click", function () {
+      if (state.historyHasNext) {
+        state.historyPage += 1;
+        loadHistory();
+      }
+    });
   }
 
   function degradedBanner(health) {
@@ -246,12 +264,11 @@
       return '<option value="' + value + '"' + (filters.outcome === value ? " selected" : "") + ">" + label + "</option>";
     }
     var rows = state.historyEvents
-      .slice()
-      .reverse()
       .map(function (event) {
         var job = event.payload && event.payload.job;
         return (
-          "<tr><td>" + escapeHtml(event.received_at) + "</td>" +
+          "<tr><td>" + escapeHtml(event.runner_alias || runnerAlias(event.runner_id)) + "</td>" +
+          "<td>" + escapeHtml(event.received_at) + "</td>" +
           "<td>" + escapeHtml(event.event_type) + "</td>" +
           "<td>" + escapeHtml(job ? job.repository : "") + (job ? " #" + escapeHtml(job.workflow_run_id) : "") + "</td>" +
           "<td>" + escapeHtml(job ? job.job_name : "") + "</td>" +
@@ -270,12 +287,15 @@
       '<select id="history-outcome"><option value="">All outcomes</option>' +
       outcomeOption("succeeded", "succeeded") + outcomeOption("failed", "failed") + outcomeOption("cancelled", "cancelled") +
       "</select>" +
-      '<label>since <input id="history-since" type="datetime-local"></label>' +
-      '<label>until <input id="history-until" type="datetime-local"></label>' +
+      '<label>since <input id="history-since" type="datetime-local" value="' + escapeHtml(isoToLocalDateTime(filters.received_after)) + '"></label>' +
+      '<label>until <input id="history-until" type="datetime-local" value="' + escapeHtml(isoToLocalDateTime(filters.received_before)) + '"></label>' +
       '<button id="history-apply">Apply filters</button>' +
       "</div>" +
-      '<table class="history-table"><thead><tr><th>received</th><th>event</th><th>workflow</th><th>job</th><th>outcome</th><th>actions</th></tr></thead>' +
-      "<tbody>" + (rows || '<tr><td colspan="6">No events match the current filters.</td></tr>') + "</tbody></table>" +
+      '<table class="history-table"><thead><tr><th>runner</th><th>received</th><th>event</th><th>workflow</th><th>job</th><th>outcome</th><th>actions</th></tr></thead>' +
+      "<tbody>" + (rows || '<tr><td colspan="7">No events match the current filters.</td></tr>') + "</tbody></table>" +
+      '<div class="history-pagination"><button id="history-prev" type="button"' + (state.historyPage <= 1 ? " disabled" : "") + '>Newer</button>' +
+      '<span class="history-page">Page ' + state.historyPage + '</span>' +
+      '<button id="history-next" type="button"' + (!state.historyHasNext ? " disabled" : "") + '>Older</button></div>' +
       "</section>"
     );
   }
@@ -287,6 +307,15 @@
     return parsed.toISOString();
   }
 
+  function isoToLocalDateTime(value) {
+    if (!value) return "";
+    var parsed = new Date(value);
+    if (isNaN(parsed.getTime())) return "";
+    function pad(number) { return String(number).padStart(2, "0"); }
+    return parsed.getFullYear() + "-" + pad(parsed.getMonth() + 1) + "-" + pad(parsed.getDate()) +
+      "T" + pad(parsed.getHours()) + ":" + pad(parsed.getMinutes());
+  }
+
   function applyHistoryFilters() {
     state.historyFilters = {
       runner_id: document.getElementById("history-runner").value,
@@ -296,6 +325,7 @@
       received_after: localDateTimeToIso(document.getElementById("history-since").value),
       received_before: localDateTimeToIso(document.getElementById("history-until").value),
     };
+    state.historyPage = 1;
     loadHistory();
   }
 
@@ -321,15 +351,19 @@
     if (filters.outcome) params.set("outcome", filters.outcome);
     if (filters.received_after) params.set("received_after", filters.received_after);
     if (filters.received_before) params.set("received_before", filters.received_before);
+    params.set("page", String(state.historyPage));
     var query = params.toString();
     return fetch("/api/history" + (query ? "?" + query : ""), { cache: "no-store" })
       .then(function (response) { return response.json(); })
       .then(function (data) {
         state.historyEvents = data.events || [];
+        state.historyPage = data.page || state.historyPage;
+        state.historyHasNext = Boolean(data.has_next);
         render();
       })
       .catch(function () {
         state.historyEvents = [];
+        state.historyHasNext = false;
       });
   }
 

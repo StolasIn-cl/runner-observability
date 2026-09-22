@@ -183,12 +183,12 @@ class PromeoCiIntegrationTests(unittest.TestCase):
                 events = history["events"]
                 self.assertEqual(
                     [event["event_type"] for event in events],
-                    ["job.started", "job.heartbeat", "job.progress", "job.finished"],
+                    ["job.finished", "job.progress", "job.heartbeat", "job.started"],
                 )
                 self.assertTrue(
                     all(event["payload"]["job"]["repository"] == REPOSITORY for event in events)
                 )
-                self.assertEqual(events[-1]["payload"]["outcome"], "succeeded")
+                self.assertEqual(events[0]["payload"]["outcome"], "succeeded")
 
                 dashboard = _json_get(f"{endpoint}/api/dashboard")
                 self.assertFalse(dashboard["health"]["degraded"])

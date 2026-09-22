@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
@@ -132,7 +132,55 @@ class Store:
                 history.append(item)
         return history
 
-    def recent_events(self, limit: int) -> list[dict[str, Any]]:
+    def history_page(
+        self,
+        filters: Mapping[str, object] | None = None,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        exclude_event_types: Collection[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Return one newest-first history page without materialising all retained events."""
+        if page < 1 or page_size < 1:
+            raise ValueError("invalid_history_pagination")
+
+        active_filters = dict(filters or {})
+        _validate_history_filters(active_filters)
+        excluded = tuple(sorted(set(exclude_event_types or ())))
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if excluded:
+            placeholders = ", ".join("?" for _ in excluded)
+            clauses.append(f"event_type NOT IN ({placeholders})")
+            parameters.extend(excluded)
+        if "runner_id" in active_filters:
+            clauses.append("runner_id = ?")
+            parameters.append(active_filters["runner_id"])
+
+        query = "SELECT * FROM events"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY event_row_id DESC"
+
+        offset = (page - 1) * page_size
+        matched = 0
+        results: list[dict[str, Any]] = []
+        for row in self._connection.execute(query, parameters):
+            item = _history_item_from_row(row)
+            if not _matches_history_filters(item, active_filters):
+                continue
+            if matched < offset:
+                matched += 1
+                continue
+            results.append(item)
+            if len(results) > page_size:
+                break
+        has_next = len(results) > page_size
+        return results[:page_size], has_next
+
+    def recent_events(
+        self, limit: int, *, exclude_event_types: Collection[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Return only the most recent bounded slice of the log, oldest of the slice first.
 
         Unlike ``history()``, this pushes the row-count bound into SQL via
@@ -141,8 +189,47 @@ class Store:
         retention and per-job heartbeats, can be tens of thousands of rows --
         just to look at the most recent activity.
         """
+        excluded = tuple(sorted(set(exclude_event_types or ())))
+        query = "SELECT * FROM events"
+        parameters: list[object] = []
+        if excluded:
+            placeholders = ", ".join("?" for _ in excluded)
+            query += f" WHERE event_type NOT IN ({placeholders})"
+            parameters.extend(excluded)
+        query += " ORDER BY event_row_id DESC LIMIT ?"
+        parameters.append(limit)
+        rows = self._connection.execute(query, parameters).fetchall()
+        return [_history_item_from_row(row) for row in reversed(rows)]
+
+    def recent_job_events(
+        self,
+        repository: str,
+        workflow_run_id: int,
+        run_attempt: int,
+        job_id: int,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Return the newest bounded events for one stable job-attempt key.
+
+        The job key lives inside the validated JSON payload rather than in
+        separate event columns.  Filtering it in SQLite keeps a busy runner
+        from crowding another runner's current-job timeline out of the live
+        dashboard window.
+        """
+        if limit < 1:
+            raise ValueError("invalid_recent_job_event_limit")
         rows = self._connection.execute(
-            "SELECT * FROM events ORDER BY event_row_id DESC LIMIT ?", (limit,)
+            """
+            SELECT * FROM events
+            WHERE json_extract(payload_json, '$.job.repository') = ?
+              AND json_extract(payload_json, '$.job.workflow_run_id') = ?
+              AND json_extract(payload_json, '$.job.run_attempt') = ?
+              AND json_extract(payload_json, '$.job.job_id') = ?
+            ORDER BY event_row_id DESC
+            LIMIT ?
+            """,
+            (repository, workflow_run_id, run_attempt, job_id, limit),
         ).fetchall()
         return [_history_item_from_row(row) for row in reversed(rows)]
 

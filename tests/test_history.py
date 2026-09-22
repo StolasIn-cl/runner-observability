@@ -96,6 +96,58 @@ class HistoryTests(unittest.TestCase):
         )
         self.assertEqual(bounded, self.store.history()[-2:])
 
+    def test_recent_job_events_pushes_job_scope_into_sql(self) -> None:
+        self.require_store_method("recent_job_events")
+        for offset in range(1, 4):
+            self.store.ingest(
+                job_event(f"20000000-0000-4000-8000-00000000004{offset}", "job.heartbeat", offset),
+                at(seconds=offset),
+            )
+
+        selected = self.store.recent_job_events("acme/widgets", 77, 1, 99, limit=2)
+
+        self.assertEqual(
+            [item["event_id"] for item in selected],
+            ["20000000-0000-4000-8000-000000000042", "20000000-0000-4000-8000-000000000043"],
+        )
+
+    def test_history_page_returns_latest_first_with_a_bounded_result_and_exclusions(self) -> None:
+        for offset in range(1, 4):
+            self.store.ingest(
+                job_event(f"20000000-0000-4000-8000-00000000003{offset}", "job.started", offset),
+                at(seconds=offset),
+            )
+        self.store.ingest(
+            validate_event(
+                {
+                    "schema_version": 1,
+                    "event_type": "runner.heartbeat",
+                    "event_id": "20000000-0000-4000-8000-000000000037",
+                    "runner_id": RUNNER,
+                    "producer_id": "runner-agent",
+                    "producer_epoch": "2026-09-18T01",
+                    "producer_sequence": 4,
+                    "occurred_at": at(seconds=4).isoformat().replace("+00:00", "Z"),
+                }
+            ),
+            at(seconds=4),
+        )
+
+        page, has_next = self.store.history_page(
+            page=1,
+            page_size=2,
+            exclude_event_types={"runner.heartbeat"},
+        )
+
+        self.assertTrue(has_next)
+        self.assertEqual(
+            [item["event_id"] for item in page],
+            [
+                "20000000-0000-4000-8000-000000000033",
+                "20000000-0000-4000-8000-000000000032",
+            ],
+        )
+
     def test_history_filter_compares_legacy_variable_fractional_seconds_chronologically(self) -> None:
         event_id = "20000000-0000-4000-8000-000000000008"
         self.store.ingest(job_event(event_id, "job.started", 1), BASE + timedelta(microseconds=100_000))

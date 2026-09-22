@@ -199,6 +199,90 @@ class DashboardSnapshotTests(unittest.TestCase):
             {"runner_id", "repository", "workflow_run_id", "outcome", "received_after", "received_before"},
         )
 
+    def test_event_feed_excludes_runner_heartbeats_and_keeps_latest_seven(self) -> None:
+        self.store.ingest(job_started("60000000-0000-4000-8000-000000000101", 1, 0), at(0))
+        for sequence in range(2, 9):
+            self.store.ingest(
+                job_heartbeat(f"60000000-0000-4000-8000-{sequence:012d}", sequence, sequence),
+                at(sequence),
+            )
+        self.store.ingest(heartbeat("60000000-0000-4000-8000-000000000109", 9, 9), at(9))
+
+        feed = self.snapshot(10)["event_feed"]
+
+        self.assertEqual(len(feed), 7)
+        self.assertNotIn("runner.heartbeat", [entry["event_type"] for entry in feed])
+        self.assertEqual(
+            [entry["occurred_at"] for entry in feed],
+            [f"2026-09-18 12:00:{seconds:02d}" for seconds in range(8, 1, -1)],
+        )
+
+    def test_job_timeline_keeps_latest_five_entries_in_latest_first_order(self) -> None:
+        self.store.ingest(job_started("60000000-0000-4000-8000-000000000201", 1, 0), at(0))
+        for sequence in range(2, 8):
+            self.store.ingest(
+                job_heartbeat(f"60000000-0000-4000-8000-{sequence:012d}", sequence, sequence),
+                at(sequence),
+            )
+
+        job = self.runner_view(self.snapshot(8))["current_job"]
+
+        self.assertEqual(len(job["timeline"]), 5)
+        self.assertEqual(
+            [entry["occurred_at"] for entry in job["timeline"]],
+            [f"2026-09-18 12:00:{seconds:02d}" for seconds in range(7, 2, -1)],
+        )
+
+    def test_job_timeline_keeps_latest_events_when_other_runners_are_busier(self) -> None:
+        other_runner = "60000000-0000-4000-8000-0000000002ff"
+        other_job = {
+            "repository": "acme/other",
+            "workflow_run_id": 901,
+            "run_attempt": 1,
+            "job_id": 5002,
+            "job_name": "other_job",
+            "run_url": "https://github.com/acme/other/actions/runs/901",
+        }
+        self.store.ingest(job_started("60000000-0000-4000-8000-000000000211", 1, 0), at(0))
+        for sequence in range(2, 8):
+            self.store.ingest(
+                job_heartbeat(f"60000000-0000-4000-8000-{sequence + 100:012d}", sequence, sequence),
+                at(sequence),
+            )
+        for sequence in range(8, 509):
+            self.store.ingest(
+                envelope(
+                    "job.heartbeat",
+                    f"60000000-0000-4000-8000-{sequence + 1000:012d}",
+                    sequence,
+                    sequence,
+                    runner_id=other_runner,
+                    job=other_job,
+                ),
+                at(sequence),
+            )
+
+        job = self.runner_view(self.snapshot(509))["current_job"]
+
+        self.assertEqual(
+            [entry["occurred_at"] for entry in job["timeline"]],
+            [f"2026-09-18 12:00:{seconds:02d}" for seconds in range(7, 2, -1)],
+        )
+
+    def test_dashboard_timestamps_are_formatted_in_taipei_time_without_iso_suffixes(self) -> None:
+        self.store.ingest(job_started("60000000-0000-4000-8000-000000000301", 1, 0), at(0))
+        self.store.ingest(job_heartbeat("60000000-0000-4000-8000-000000000302", 2, 1), at(1))
+
+        snapshot = self.snapshot(2)
+        runner = self.runner_view(snapshot)
+        job = runner["current_job"]
+
+        self.assertEqual(snapshot["generated_at"], "2026-09-18 12:00:02")
+        self.assertEqual(job["last_received_at"], "2026-09-18 12:00:01")
+        self.assertEqual(job["last_heartbeat_at"], "2026-09-18 12:00:01")
+        self.assertEqual(job["timeline"][0]["received_at"], "2026-09-18 12:00:01")
+        self.assertNotIn("Z", json.dumps(snapshot))
+
     def test_incidents_and_health_are_surfaced_from_the_store(self) -> None:
         self.store.ingest(job_started("60000000-0000-4000-8000-00000000000b", 1, 0), at(0))
 
@@ -382,6 +466,53 @@ class DashboardHttpWiringTests(unittest.TestCase):
         self.assertEqual(js_status, 200)
         self.assertIn("javascript", js_headers.get("Content-Type", ""))
         self.assertTrue(js_body)
+
+    def test_static_assets_define_dark_theme_and_history_pagination_controls(self) -> None:
+        _, css_body, _ = self.get("/app.css")
+        _, js_body, _ = self.get("/app.js")
+
+        self.assertIn("color-scheme: dark", css_body)
+        self.assertIn("history-page", js_body)
+        self.assertIn("history-prev", js_body)
+        self.assertIn("history-next", js_body)
+        self.assertIn("runner_alias", js_body)
+        self.assertIn("isoToLocalDateTime(filters.received_after)", js_body)
+        self.assertIn("isoToLocalDateTime(filters.received_before)", js_body)
+        self.assertNotIn("background: #e7edf4", css_body)
+        self.assertIn(".progress-track", css_body)
+
+    def test_api_history_is_paginated_newest_first_and_hides_runner_heartbeats(self) -> None:
+        self.store.ingest(heartbeat("60000000-0000-4000-8000-000000000401", 1, 0), at(0))
+        for sequence in range(1, 22):
+            self.store.ingest(
+                job_started(f"60000000-0000-4000-8000-{sequence:012d}", sequence, sequence),
+                at(sequence),
+            )
+
+        first_status, first_body, _ = self.get("/api/history?page=1")
+        second_status, second_body, _ = self.get("/api/history?page=2")
+        first_page = json.loads(first_body)
+        second_page = json.loads(second_body)
+
+        self.assertEqual(first_status, 200)
+        self.assertEqual(first_page["page"], 1)
+        self.assertEqual(first_page["page_size"], 20)
+        self.assertTrue(first_page["has_next"])
+        self.assertEqual(len(first_page["events"]), 20)
+        self.assertNotIn("runner.heartbeat", [event["event_type"] for event in first_page["events"]])
+        self.assertEqual(first_page["events"][0]["runner_alias"], f"runner-{RUNNER[:8]}")
+        self.assertEqual(first_page["events"][0]["received_at"], "2026-09-18 12:00:21")
+
+        self.assertEqual(second_status, 200)
+        self.assertEqual(second_page["page"], 2)
+        self.assertFalse(second_page["has_next"])
+        self.assertEqual(len(second_page["events"]), 1)
+        self.assertEqual(
+            {event["event_id"] for event in first_page["events"]}.isdisjoint(
+                {event["event_id"] for event in second_page["events"]}
+            ),
+            True,
+        )
 
     def test_api_dashboard_returns_the_same_shape_as_dashboard_snapshot(self) -> None:
         self.store.ingest(job_started("60000000-0000-4000-8000-00000000000f", 1, 0), at(0))

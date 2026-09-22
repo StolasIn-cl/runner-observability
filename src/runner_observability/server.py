@@ -14,8 +14,8 @@ from threading import RLock
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from .contracts import MAX_PAYLOAD_BYTES, ValidationError, validate_event
-from .dashboard import dashboard_snapshot
+from .contracts import EVENT_RUNNER_HEARTBEAT, MAX_PAYLOAD_BYTES, ValidationError, validate_event
+from .dashboard import dashboard_snapshot, history_event_view
 from .store import Store
 
 
@@ -24,6 +24,7 @@ Clock = Callable[[], datetime]
 MAX_REJECTED_BODY_DRAIN_BYTES = MAX_PAYLOAD_BYTES + 1
 REQUEST_READ_TIMEOUT_SECONDS = 1.0
 STATIC_DIR = Path(__file__).parent / "static"
+HISTORY_PAGE_SIZE = 20
 
 # Stable, redacted TLS configuration reason codes (issue #7 PERS-07),
 # following the same convention as ``deploy.py``'s ``REASON_*`` constants
@@ -182,13 +183,27 @@ def create_server(
                 return
             if parsed.path == "/api/history":
                 try:
+                    page = _history_page_number(parsed.query)
                     filters = _history_filters(parse_qs(parsed.query, keep_blank_values=True))
                     with store_lock:
-                        events = store.history(filters)
+                        events, has_next = store.history_page(
+                            filters,
+                            page=page,
+                            page_size=HISTORY_PAGE_SIZE,
+                            exclude_event_types={EVENT_RUNNER_HEARTBEAT},
+                        )
                 except ValueError:
                     self._reject(400, "invalid_history_filter")
                     return
-                self._json(200, {"events": events})
+                self._json(
+                    200,
+                    {
+                        "events": [history_event_view(event) for event in events],
+                        "page": page,
+                        "page_size": HISTORY_PAGE_SIZE,
+                        "has_next": has_next,
+                    },
+                )
                 return
             if parsed.path == "/api/dashboard":
                 try:
@@ -317,12 +332,26 @@ def create_server(
 def _history_filters(query: dict[str, list[str]]) -> dict[str, object]:
     """Translate a single-valued, limited query vocabulary into Store filters."""
     allowed = {"runner_id", "repository", "workflow_run_id", "outcome", "received_after", "received_before"}
-    if any(key not in allowed or len(values) != 1 for key, values in query.items()):
+    filters_query = {key: values for key, values in query.items() if key != "page"}
+    if any(key not in allowed or len(values) != 1 for key, values in filters_query.items()):
         raise ValueError("invalid_history_filter")
-    filters: dict[str, object] = {key: values[0] for key, values in query.items()}
+    filters: dict[str, object] = {key: values[0] for key, values in filters_query.items()}
     if "workflow_run_id" in filters:
         try:
             filters["workflow_run_id"] = int(str(filters["workflow_run_id"]))
         except ValueError as error:
             raise ValueError("invalid_history_filter") from error
     return filters
+
+
+def _history_page_number(query: str) -> int:
+    values = parse_qs(query, keep_blank_values=True).get("page", ["1"])
+    if len(values) != 1:
+        raise ValueError("invalid_history_filter")
+    try:
+        page = int(values[0])
+    except ValueError as error:
+        raise ValueError("invalid_history_filter") from error
+    if page < 1:
+        raise ValueError("invalid_history_filter")
+    return page

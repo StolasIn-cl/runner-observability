@@ -203,7 +203,7 @@ class MonitorHttpTests(unittest.TestCase):
         self.assertEqual(health_status, 200)
         self.assertEqual(health, {"degraded": False, "reasons": []})
         self.assertEqual(history_status, 200)
-        self.assertEqual(history, {"events": []})
+        self.assertEqual(history, {"events": [], "page": 1, "page_size": 20, "has_next": False})
 
 
 if __name__ == "__main__":
