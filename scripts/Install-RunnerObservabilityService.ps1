@@ -42,6 +42,7 @@ function Assert-InstallInput {
 
 function Invoke-Install {
     Assert-InstallInput
+    Assert-RunnerObservabilityServiceAbsent -ServiceName $ServiceName
     $databaseDirectory = Split-Path -Parent $DatabasePath
     $configuration = @{
         service_name = $ServiceName
@@ -71,17 +72,20 @@ function Invoke-Install {
 try {
     switch ($Action) {
         "Install" { Invoke-Install }
-        "Start" { Start-RunnerObservabilityService -ServiceName $ServiceName; Write-Output "service operation=start result=pass" }
-        "Stop" { Stop-RunnerObservabilityService -ServiceName $ServiceName; Write-Output "service operation=stop result=pass" }
-        "Status" { Write-Output ("service operation=status state=" + (Get-RunnerObservabilityServiceState -ServiceName $ServiceName)) }
+        "Start" { Start-RunnerObservabilityService -ServiceName $ServiceName | Out-Null; Write-Output "service operation=start result=pass" }
+        "Stop" { Stop-RunnerObservabilityService -ServiceName $ServiceName | Out-Null; Write-Output "service operation=stop result=pass" }
+        "Status" {
+            $state = Get-RunnerObservabilityServiceState -ServiceName $ServiceName
+            Write-Output ("service operation=status state=" + $state.ToLowerInvariant())
+        }
         "Restart" {
-            Stop-RunnerObservabilityService -ServiceName $ServiceName
-            Start-RunnerObservabilityService -ServiceName $ServiceName
+            Stop-RunnerObservabilityService -ServiceName $ServiceName | Out-Null
+            Start-RunnerObservabilityService -ServiceName $ServiceName | Out-Null
             Write-Output "service operation=restart result=pass"
         }
         "Uninstall" {
-            Stop-RunnerObservabilityService -ServiceName $ServiceName
-            Remove-RunnerObservabilityService -ServiceName $ServiceName
+            Stop-RunnerObservabilityService -ServiceName $ServiceName | Out-Null
+            Remove-RunnerObservabilityService -ServiceName $ServiceName | Out-Null
             Remove-RunnerObservabilityFirewallRule
             Write-Output "service operation=uninstall result=pass"
         }
@@ -89,6 +93,10 @@ try {
     exit 0
 }
 catch {
-    Write-Error "service operation failed reason=service_operation_failed"
+    $reason = $_.Exception.Message
+    if ($reason -notin @("service_already_exists", "service_state_timeout")) {
+        $reason = "service_operation_failed"
+    }
+    Write-Error ("service operation failed reason=" + $reason)
     exit 2
 }

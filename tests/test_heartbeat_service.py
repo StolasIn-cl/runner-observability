@@ -127,6 +127,50 @@ class HeartbeatServiceTests(unittest.TestCase):
         self.assertNotIn("replace($temporarypath, $path, $null)", source)
         self.assertNotIn("--token ", source)
 
+    def test_install_rejects_an_existing_exact_service_before_writing_config(self) -> None:
+        script = SCRIPT.read_text(encoding="utf-8")
+        module = MODULE.read_text(encoding="utf-8")
+        self.assertIn("Get-CimInstance", module)
+        self.assertIn("Win32_Service", module)
+        self.assertIn("service_already_exists", script + module)
+        self.assertLess(
+            script.index("Assert-RunnerHeartbeatServiceAbsent"),
+            script.index("Write-RunnerHeartbeatConfigAtomic"),
+        )
+
+    def test_lifecycle_commands_use_bounded_actual_state_readback(self) -> None:
+        source = MODULE.read_text(encoding="utf-8")
+        for term in (
+            "TimeoutSeconds",
+            "PollMilliseconds",
+            "Stopwatch",
+            "service_state_timeout",
+            '-DesiredState "Running"',
+            '-DesiredState "Stopped"',
+            '-DesiredState "Absent"',
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, source)
+        self.assertIn('if ($state -eq "Running")', source)
+        self.assertIn('$state -eq "Stopped"', source)
+
+    def test_uninstall_stops_before_delete_and_verifies_absence(self) -> None:
+        script = SCRIPT.read_text(encoding="utf-8")
+        module = MODULE.read_text(encoding="utf-8")
+        uninstall = script[script.index('"Uninstall"') :]
+        self.assertLess(
+            uninstall.index("Stop-RunnerHeartbeatService"),
+            uninstall.index("Remove-RunnerHeartbeatService"),
+        )
+        remove_function = module[module.index("function Remove-RunnerHeartbeatService") :]
+        self.assertIn('-DesiredState "Absent"', remove_function)
+
+    def test_service_command_remains_config_path_only(self) -> None:
+        source = MODULE.read_text(encoding="utf-8")
+        self.assertIn("heartbeat_service run --config", source)
+        self.assertNotIn("--token ", source)
+        self.assertNotIn("--endpoint ", source)
+
     def test_runbook_documents_runner_heartbeat_service(self) -> None:
         source = RUNBOOK.read_text(encoding="utf-8")
         for term in ("Runner Heartbeat Service", "Install-RunnerHeartbeatService.ps1", "60 seconds", "state file", "issue #9"):

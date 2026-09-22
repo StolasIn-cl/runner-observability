@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import unittest
+
+from runner_observability.deploy import WindowsScServiceLifecycle
 
 
 ROOT = Path(__file__).parents[1]
@@ -64,6 +67,51 @@ class ServiceScriptContractTests(unittest.TestCase):
         self.assertIn('(OI)(CI)(F)', self.module_text)
         self.assertIn("SYSTEM:(F)", self.module_text)
         self.assertIn("Administrators:(F)", self.module_text)
+
+    def test_install_rejects_an_existing_exact_service_before_writing_config(self) -> None:
+        self.assertIn("Get-CimInstance", self.module_text)
+        self.assertIn("Win32_Service", self.module_text)
+        self.assertIn("service_already_exists", self.module_text + self.script_text)
+        absent_check = self.script_text.index("Assert-RunnerObservabilityServiceAbsent")
+        config_write = self.script_text.index("Write-RunnerObservabilityConfigAtomic")
+        self.assertLess(absent_check, config_write)
+
+    def test_lifecycle_commands_use_bounded_actual_state_readback(self) -> None:
+        for term in (
+            "TimeoutSeconds",
+            "PollMilliseconds",
+            "Stopwatch",
+            "service_state_timeout",
+            "-DesiredState \"Running\"",
+            "-DesiredState \"Stopped\"",
+            "-DesiredState \"Absent\"",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, self.module_text)
+        self.assertIn('if ($state -eq "Running")', self.module_text)
+        self.assertIn('$state -eq "Stopped"', self.module_text)
+
+    def test_uninstall_stops_before_delete_and_verifies_absence(self) -> None:
+        uninstall = self.script_text[self.script_text.index('"Uninstall"') :]
+        self.assertLess(
+            uninstall.index("Stop-RunnerObservabilityService"),
+            uninstall.index("Remove-RunnerObservabilityService"),
+        )
+        remove_function = self.module_text[self.module_text.index("function Remove-RunnerObservabilityService") :]
+        self.assertIn('-DesiredState "Absent"', remove_function)
+
+    def test_python_lifecycle_maps_a_successful_transitional_query_to_unknown(self) -> None:
+        def runner(arguments: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(
+                arguments,
+                0,
+                stdout="STATE : 2  START_PENDING",
+                stderr="",
+            )
+
+        lifecycle = WindowsScServiceLifecycle("RunnerObservabilityMonitor", runner)
+
+        self.assertEqual(lifecycle.status(), "unknown")
 
 
 if __name__ == "__main__":

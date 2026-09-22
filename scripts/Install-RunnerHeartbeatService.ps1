@@ -50,6 +50,7 @@ function Assert-InstallInput {
 
 function Invoke-Install {
     Assert-InstallInput
+    Assert-RunnerHeartbeatServiceAbsent -ServiceName $ServiceName
     $stateDirectory = Split-Path -Parent $StatePath
     $configuration = @{
         endpoint = $Endpoint
@@ -75,23 +76,30 @@ function Invoke-Install {
 try {
     switch ($Action) {
         "Install" { Invoke-Install }
-        "Start" { Start-RunnerHeartbeatService -ServiceName $ServiceName; Write-Output "service operation=start result=pass" }
-        "Stop" { Stop-RunnerHeartbeatService -ServiceName $ServiceName; Write-Output "service operation=stop result=pass" }
-        "Status" { Write-Output ("service operation=status state=" + (Get-RunnerHeartbeatServiceState -ServiceName $ServiceName)) }
+        "Start" { Start-RunnerHeartbeatService -ServiceName $ServiceName | Out-Null; Write-Output "service operation=start result=pass" }
+        "Stop" { Stop-RunnerHeartbeatService -ServiceName $ServiceName | Out-Null; Write-Output "service operation=stop result=pass" }
+        "Status" {
+            $state = Get-RunnerHeartbeatServiceState -ServiceName $ServiceName
+            Write-Output ("service operation=status state=" + $state.ToLowerInvariant())
+        }
         "Restart" {
-            Stop-RunnerHeartbeatService -ServiceName $ServiceName
-            Start-RunnerHeartbeatService -ServiceName $ServiceName
+            Stop-RunnerHeartbeatService -ServiceName $ServiceName | Out-Null
+            Start-RunnerHeartbeatService -ServiceName $ServiceName | Out-Null
             Write-Output "service operation=restart result=pass"
         }
         "Uninstall" {
-            Stop-RunnerHeartbeatService -ServiceName $ServiceName
-            Remove-RunnerHeartbeatService -ServiceName $ServiceName
+            Stop-RunnerHeartbeatService -ServiceName $ServiceName | Out-Null
+            Remove-RunnerHeartbeatService -ServiceName $ServiceName | Out-Null
             Write-Output "service operation=uninstall result=pass"
         }
     }
     exit 0
 }
 catch {
-    Write-Error "service operation failed reason=service_operation_failed"
+    $reason = $_.Exception.Message
+    if ($reason -notin @("service_already_exists", "service_state_timeout")) {
+        $reason = "service_operation_failed"
+    }
+    Write-Error ("service operation failed reason=" + $reason)
     exit 2
 }
