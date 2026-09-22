@@ -123,6 +123,127 @@ Record the inventory in [`CONTEXT.md`](CONTEXT.md) before proceeding. If the
 machine does not match the known snapshot, keep its paths and account separate
 from the other machines.
 
+## Monitor Host onboarding (Monitor first)
+
+Validate the Monitor Host before configuring any Runner. Run the shared Step 0
+inventory on the actual Monitor Host, compare it with `CONTEXT.md`, and then
+use `scripts/Install-RunnerObservabilityMonitor.ps1`. The script performs its
+own inventory gate before every action; `Preflight` and `-WhatIf` are
+read-only.
+
+Use paired operator-supplied files for `PublicCa`, `PrivateCa`, or `Existing`:
+
+```powershell
+$python = 'C:\Python311\python.exe'
+$config = 'C:\runner-observability\service-config.json'
+$database = 'C:\runner-observability-data\monitor.sqlite'
+$secretRoot = 'C:\runner-observability-secrets'
+$token = Join-Path $secretRoot 'monitor-token.txt'
+$cert = Join-Path $secretRoot 'monitor.crt'
+$key = Join-Path $secretRoot 'monitor.key'
+$runnerIp = '192.0.2.10' # replace with the inventory-confirmed Runner address
+
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Preflight -PythonPath $python -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
+    -TlsCertPath $cert -TlsKeyPath $key -CertificateMode Existing `
+    -RunnerAddress $runnerIp
+
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Install -PythonPath $python -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
+    -TlsCertPath $cert -TlsKeyPath $key -CertificateMode Existing `
+    -RunnerAddress $runnerIp
+```
+
+For an explicitly approved development/test certificate, choose `SelfSigned`
+and `-AllowDevSelfSigned`. The script creates missing parent directories, then
+uses Windows/.NET `CertificateRequest` with a 2048-bit RSA key. It writes the
+certificate as PEM and the private key as in-script PKCS#8 PEM; it never calls
+OpenSSL. If that .NET API is unavailable it fails closed with
+`certificate_generation_unavailable` and does not start the service. A
+`monitor.key` is never copied to a Runner.
+
+```powershell
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Install -PythonPath $python -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
+    -TlsCertPath $cert -TlsKeyPath $key -CertificateMode SelfSigned `
+    -AllowDevSelfSigned -RunnerAddress $runnerIp
+```
+
+The token is generated into an atomically activated, ACL-protected file when
+it is absent. It is never accepted as a parameter or placed in the service
+command line; the service configuration uses a token file and the runtime
+expands it to `--token-file`. Installation registers the service and leaves it
+stopped until `Start` is requested, and scopes the fixed inbound firewall rule
+to the supplied Runner addresses.
+
+Use the same entry point for bounded lifecycle actions. `Uninstall` removes
+only the named Monitor service and its owned firewall rule; it preserves the
+token, certificate, key, config, database, and Runner data.
+
+```powershell
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action RepairPermissions `
+    -PythonPath $python -ConfigPath $config -DatabasePath $database `
+    -SecretRoot $secretRoot -TokenPath $token -TlsCertPath $cert `
+    -TlsKeyPath $key -RunnerAddress $runnerIp
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Status -ServiceName 'RunnerObservabilityMonitor'
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Start -ServiceName 'RunnerObservabilityMonitor'
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Stop -ServiceName 'RunnerObservabilityMonitor'
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Restart -ServiceName 'RunnerObservabilityMonitor'
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Uninstall -ServiceName 'RunnerObservabilityMonitor'
+```
+
+After Monitor `Preflight`/install and a real Monitor service check, continue
+with the Runner onboarding below. A passing local test suite is not live
+deployment evidence; finish with one real CI job and dashboard association.
+
+## Runner Host onboarding (after Monitor passes)
+
+Transfer only `monitor-token.txt` and, for a private-CA/self-signed trust
+model, the public `monitor.crt` to the Runner. Never transfer `monitor.key`.
+Run the Runner entry point after replacing the endpoint and confirmed Monitor
+IPv4 address:
+
+```powershell
+$python = 'C:\Python311\python.exe'
+$installRoot = 'C:\runner-observability-agent'
+$endpoint = 'https://monitor-test.local:8765'
+$token = 'C:\runner-observability-secrets\monitor-token.txt'
+$monitorIp = '192.0.2.20' # replace with the inventory-confirmed Monitor address
+
+.\scripts\Install-RunnerObservabilityRunner.ps1 `
+    -Action Preflight -PythonPath $python -InstallRoot $installRoot `
+    -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
+    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
+
+.\scripts\Install-RunnerObservabilityRunner.ps1 `
+    -Action Configure -PythonPath $python -InstallRoot $installRoot `
+    -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
+    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
+```
+
+For `PrivateCa` or `SelfSigned`, pass only the public certificate and the
+operator-confirmed SHA-256 fingerprint; `-ImportCertificate` verifies that
+fingerprint before touching the Windows trust store. `-AllowHostsChange` is a
+separate explicit gate and preserves unrelated hosts entries. If the token
+file is absent, `Configure` prompts using `Read-Host -AsSecureString` and
+creates an ACL-protected file. The token value is never a parameter or
+service argument, and `monitor.key` is rejected on a Runner.
+
+Use the Runner entry point for lifecycle and repair actions. `Uninstall`
+removes only the named Heartbeat service and preserves persistent data:
+
+```powershell
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action RepairPermissions -InstallRoot $installRoot -TokenPath $token
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Status -ServiceName 'RunnerObservabilityHeartbeat'
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Start -ServiceName 'RunnerObservabilityHeartbeat'
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Stop -ServiceName 'RunnerObservabilityHeartbeat'
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Restart -ServiceName 'RunnerObservabilityHeartbeat'
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Uninstall -ServiceName 'RunnerObservabilityHeartbeat'
+```
+
 ## New Runner onboarding (real deployment)
 
 The following procedure creates the layout consumed by Promeo's

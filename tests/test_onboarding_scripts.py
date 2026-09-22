@@ -12,6 +12,8 @@ import unittest
 
 ROOT = Path(__file__).parents[1]
 BOOTSTRAP_MODULE = ROOT / "scripts" / "RunnerObservability.Bootstrap.psm1"
+MONITOR_SCRIPT = ROOT / "scripts" / "Install-RunnerObservabilityMonitor.ps1"
+RUNNER_SCRIPT = ROOT / "scripts" / "Install-RunnerObservabilityRunner.ps1"
 POWERSHELL = "powershell.exe"
 
 
@@ -332,6 +334,234 @@ exit 0
         completed = run_powershell(script)
 
         self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+
+class MonitorRoleScriptStaticContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.script_text = (
+            MONITOR_SCRIPT.read_text(encoding="utf-8")
+            if MONITOR_SCRIPT.is_file()
+            else ""
+        )
+        cls.lowered = cls.script_text.lower()
+        cls.readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
+        cls.runbook_text = (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
+
+    def test_monitor_entry_point_exposes_required_parameters_and_actions(self) -> None:
+        self.assertTrue(MONITOR_SCRIPT.is_file())
+        for parameter in (
+            "Action",
+            "PythonPath",
+            "ConfigPath",
+            "DatabasePath",
+            "SecretRoot",
+            "TokenPath",
+            "TlsCertPath",
+            "TlsKeyPath",
+            "CertificateMode",
+            "RunnerAddress",
+            "ServiceName",
+            "ServiceAccount",
+            "AllowDevSelfSigned",
+            "WhatIf",
+        ):
+            with self.subTest(parameter=parameter):
+                self.assertRegex(self.script_text, rf"\$({parameter})\b")
+        for action in (
+            "Preflight",
+            "Install",
+            "RepairPermissions",
+            "Start",
+            "Stop",
+            "Restart",
+            "Status",
+            "Uninstall",
+        ):
+            with self.subTest(action=action):
+                self.assertIn(action, self.script_text)
+
+    def test_monitor_script_runs_inventory_before_mutations(self) -> None:
+        self.assertIn("RunnerObservability.Bootstrap.psm1", self.script_text)
+        self.assertIn("RunnerObservability.Service.psm1", self.script_text)
+        inventory = self.script_text.index("Get-RunnerObservabilityInventory")
+        gate = self.script_text.index("Assert-RunnerObservabilityInventoryGate")
+        mutation = self.script_text.index("New-RunnerObservabilityTokenFile")
+        self.assertLess(inventory, gate)
+        self.assertLess(gate, mutation)
+        self.assertIn('Operation "Troubleshooting"', self.script_text)
+        self.assertIn('Role "Monitor"', self.script_text)
+
+    def test_monitor_certificate_modes_are_explicit_and_self_signed_is_native(self) -> None:
+        for mode in ("PublicCa", "PrivateCa", "SelfSigned", "Existing"):
+            with self.subTest(mode=mode):
+                self.assertIn(mode, self.script_text)
+        for marker in (
+            "CertificateRequest",
+            "RSA]::Create",
+            "2048",
+            "CreateSelfSigned",
+            "X509ContentType]::Cert",
+            "ExportPkcs8PrivateKey",
+            "Label \"CERTIFICATE\"",
+            "Label \"PRIVATE KEY\"",
+            "certificate_generation_unavailable",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.script_text)
+        self.assertNotIn("openssl", self.lowered)
+        self.assertNotIn("openssl.exe", self.lowered)
+        self.assertIn("Write-MonitorProtectedTextAtomically", self.script_text)
+        self.assertLess(
+            self.script_text.index("WriteAllBytes($temporaryPath"),
+            self.script_text.index("Set-RunnerObservabilityFileAcl -Path $temporaryPath"),
+        )
+        self.assertLess(
+            self.script_text.index("Set-RunnerObservabilityFileAcl -Path $temporaryPath"),
+            self.script_text.index("WriteAllText($temporaryPath"),
+        )
+
+    def test_monitor_script_keeps_token_and_private_key_out_of_commands_and_output(self) -> None:
+        self.assertNotRegex(self.script_text, r"(?im)^\s*\[string\]\$Token\b")
+        self.assertNotRegex(self.script_text, r"(?i)-Token\s+\$|--token\s+\$|--token\s+\S+")
+        self.assertIn("--token-file", self.script_text)
+        self.assertNotRegex(
+            self.script_text,
+            r"(?is)(Copy-Item|Copy-File|Move-Item)[^\r\n]*(monitor\.key)|monitor\.key[^\r\n]*(Copy-Item|Copy-File|Move-Item)",
+        )
+        self.assertNotRegex(
+            self.script_text,
+            r"(?im)Write-(Host|Output|Verbose|Debug)[^\r\n]*(token|monitor\.key|private key|certificate content)",
+        )
+        self.assertIn("fingerprint", self.lowered)
+        self.assertIn("expiry", self.lowered)
+        self.assertIn("reason", self.lowered)
+
+    def test_monitor_install_uses_existing_service_adapter_and_safe_uninstall(self) -> None:
+        for term in (
+            "Assert-RunnerObservabilityServiceAbsent",
+            "Register-RunnerObservabilityService",
+            "Start-RunnerObservabilityService",
+            "Stop-RunnerObservabilityService",
+            "Get-RunnerObservabilityServiceState",
+            "Remove-RunnerObservabilityService",
+            "Ensure-RunnerObservabilityFirewallRule",
+            "Remove-RunnerObservabilityFirewallRule",
+            "Write-RunnerObservabilityConfigAtomic",
+            "Set-RunnerObservabilityFileAcl",
+            "Set-RunnerObservabilityDirectoryAcl",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, self.script_text)
+        uninstall = self.script_text[self.script_text.index('"Uninstall"') :]
+        self.assertLess(
+            uninstall.index("Remove-RunnerObservabilityService"),
+            uninstall.index("Remove-RunnerObservabilityFirewallRule"),
+        )
+        self.assertIn("preserve", self.lowered)
+
+    def test_docs_describe_monitor_first_order_and_certificate_fallback(self) -> None:
+        combined = (self.readme_text + "\n" + self.runbook_text).lower()
+        for term in (
+            "install-runnerobservabilitymonitor.ps1",
+            "-action preflight",
+            "-action install",
+            "-action repairpermissions",
+            "-action status",
+            "-action stop",
+            "-action start",
+            "-action restart",
+            "-action uninstall",
+            "selfsigned",
+            "certificaterequest",
+            "certificate_generation_unavailable",
+            "monitor.key",
+            "do not copy",
+            "runner",
+            "inventory",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, combined)
+
+
+class RunnerRoleScriptStaticContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.script_text = RUNNER_SCRIPT.read_text(encoding="utf-8") if RUNNER_SCRIPT.is_file() else ""
+        cls.lowered = cls.script_text.lower()
+        cls.readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
+        cls.runbook_text = (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
+
+    def test_runner_entry_point_exposes_required_parameters_and_actions(self) -> None:
+        self.assertTrue(RUNNER_SCRIPT.is_file())
+        for parameter in (
+            "Action", "PythonPath", "InstallRoot", "Endpoint", "TokenPath", "RunnerId",
+            "StatePath", "MonitorHost", "MonitorIp", "CertificateTrustModel",
+            "MonitorCertificatePath", "ExpectedCertificateSha256", "ImportCertificate",
+            "AllowHostsChange", "RunnerAccount", "ServiceAccount", "ServiceName",
+            "AllowInsecureHttp",
+        ):
+            with self.subTest(parameter=parameter):
+                self.assertRegex(self.script_text, rf"\$({parameter})\b")
+        for action in (
+            "Preflight", "Configure", "RepairPermissions", "Start", "Stop", "Restart", "Status", "Uninstall"
+        ):
+            with self.subTest(action=action):
+                self.assertIn(action, self.script_text)
+
+    def test_runner_uses_inventory_and_service_config_path_without_token_value(self) -> None:
+        self.assertIn("RunnerObservability.Bootstrap.psm1", self.script_text)
+        self.assertIn("RunnerHeartbeat.Service.psm1", self.script_text)
+        self.assertIn("Get-RunnerObservabilityInventory", self.script_text)
+        self.assertIn("Assert-RunnerObservabilityInventoryGate", self.script_text)
+        self.assertIn("Register-RunnerHeartbeatService", self.script_text)
+        self.assertIn("Write-RunnerHeartbeatConfigAtomic", self.script_text)
+        self.assertNotRegex(self.script_text, r"(?im)^\s*\[string\]\$Token\b")
+        self.assertNotRegex(self.script_text, r"(?i)--token\s+\$|--token\s+\S+")
+        self.assertNotIn("monitor.key", self.lowered.replace('"monitor.key"', ""))
+        self.assertIn("monitor_key_not_allowed", self.script_text)
+
+    def test_runner_requires_confirmed_monitor_address_and_rejects_key_copy(self) -> None:
+        self.assertIn("Test-RunnerObservabilityMonitorIp", self.script_text)
+        self.assertIn("monitor_ip_invalid", self.script_text)
+        self.assertIn("monitor_host_invalid", self.script_text)
+        self.assertIn("AllowHostsChange", self.script_text)
+        self.assertIn("Set-RunnerObservabilityHostsMapping", self.script_text)
+        self.assertNotRegex(
+            self.script_text,
+            r"(?is)(Copy-Item|Copy-File|Move-Item)[^\r\n]*(monitor\.key)|monitor\.key[^\r\n]*(Copy-Item|Copy-File|Move-Item)",
+        )
+
+    def test_runner_certificate_import_requires_sha256_before_import(self) -> None:
+        self.assertIn("ExpectedCertificateSha256", self.script_text)
+        self.assertIn("certificate_fingerprint_mismatch", self.script_text)
+        self.assertIn("Import-Certificate", self.script_text)
+        self.assertLess(
+            self.script_text.index("certificate_fingerprint_mismatch"),
+            self.script_text.index("Import-Certificate"),
+        )
+        self.assertIn("-PromptForToken", self.script_text)
+        self.assertIn("Read-Host -AsSecureString", (BOOTSTRAP_MODULE.read_text(encoding="utf-8")))
+        self.assertIn("New-RunnerObservabilityTokenFile", self.script_text)
+
+    def test_docs_describe_monitor_then_runner_order(self) -> None:
+        combined = (self.readme_text + "\n" + self.runbook_text).lower()
+        for term in (
+            "install-runnerobservabilityrunner.ps1",
+            "-action preflight",
+            "-action configure",
+            "-action repairpermissions",
+            "-action status",
+            "-action stop",
+            "-action start",
+            "-action restart",
+            "-action uninstall",
+            "monitor first",
+            "runner",
+            "monitor.key",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, combined)
 
 
 if __name__ == "__main__":

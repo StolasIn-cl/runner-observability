@@ -52,6 +52,130 @@ any script or test in this repository.
   with unrelated content; `Update-RunnerObservability.ps1` only manages
   what it created.
 
+## Monitor Host onboarding (run this before Runner onboarding)
+
+Run the shared Step 0 inventory on the actual Monitor Host first and compare
+the result with `CONTEXT.md`. The Monitor entry point starts with the same
+read-only inventory before every operation and supports `-WhatIf` without
+creating files, changing ACLs, touching the firewall, or changing SCM state.
+
+The following uses an existing, operator-supplied certificate pair. `PublicCa`,
+`PrivateCa`, and `Existing` all require both `-TlsCertPath` and `-TlsKeyPath`;
+they never silently replace those files.
+
+```powershell
+$python = 'C:\Python311\python.exe'
+$config = 'C:\runner-observability\service-config.json'
+$database = 'C:\runner-observability-data\monitor.sqlite'
+$secretRoot = 'C:\runner-observability-secrets'
+$token = Join-Path $secretRoot 'monitor-token.txt'
+$cert = Join-Path $secretRoot 'monitor.crt'
+$key = Join-Path $secretRoot 'monitor.key'
+$runnerIp = '192.0.2.10' # replace with the confirmed Runner IPv4 address
+
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Preflight -PythonPath $python -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
+    -TlsCertPath $cert -TlsKeyPath $key -CertificateMode Existing `
+    -RunnerAddress $runnerIp
+
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Install -PythonPath $python -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
+    -TlsCertPath $cert -TlsKeyPath $key -CertificateMode Existing `
+    -RunnerAddress $runnerIp
+```
+
+For development/test only, `SelfSigned` requires the explicit
+`-AllowDevSelfSigned` switch. Missing parent directories are created before
+generation. The script uses Windows/.NET `CertificateRequest` and a 2048-bit
+RSA key, exports the certificate as PEM, and encodes the private key as
+in-script PKCS#8 PEM. It does not invoke OpenSSL. If the required API is not
+available it stops with the stable reason
+`certificate_generation_unavailable` and does not start the service.
+
+```powershell
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Install -PythonPath $python -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
+    -TlsCertPath $cert -TlsKeyPath $key -CertificateMode SelfSigned `
+    -AllowDevSelfSigned -RunnerAddress $runnerIp
+```
+
+The Monitor script generates the token when absent and writes it atomically
+with restrictive ACLs. A token value is never a parameter, command-line
+argument, config value, or output. The service is configured through a path;
+the runtime uses `--token-file`. `monitor.key` stays on the Monitor Host and
+is never copied to a Runner. Output is limited to service state, paths,
+certificate fingerprint/expiry metadata, and stable reason codes.
+
+`Install` refuses an existing Monitor service, registers a stopped service,
+and scopes the fixed inbound firewall rule to the confirmed Runner addresses.
+Use the bounded lifecycle actions below; each reads back actual SCM state.
+
+```powershell
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action RepairPermissions `
+    -PythonPath $python -ConfigPath $config -DatabasePath $database `
+    -SecretRoot $secretRoot -TokenPath $token -TlsCertPath $cert `
+    -TlsKeyPath $key -RunnerAddress $runnerIp
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Status -ServiceName 'RunnerObservabilityMonitor'
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Start -ServiceName 'RunnerObservabilityMonitor'
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Stop -ServiceName 'RunnerObservabilityMonitor'
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Restart -ServiceName 'RunnerObservabilityMonitor'
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Uninstall -ServiceName 'RunnerObservabilityMonitor'
+```
+
+`Uninstall` removes only the named Monitor service and owned firewall rule.
+It preserves the token, certificate, private key, config, database, releases,
+Runner identity, and Runner state. After the Monitor checks are complete,
+continue with Runner onboarding and then one real CI job/dashboard
+association check. Local tests do not prove live service, TLS trust,
+firewall, or CI acceptance.
+
+## Runner Host onboarding (after Monitor validation)
+
+Transfer only the token file and, for a private-CA/self-signed trust model,
+the public `monitor.crt`. Never copy `monitor.key`. Run the Runner entry point
+after substituting the confirmed Monitor address:
+
+```powershell
+$python = 'C:\Python311\python.exe'
+$installRoot = 'C:\runner-observability-agent'
+$endpoint = 'https://monitor-test.local:8765'
+$token = 'C:\runner-observability-secrets\monitor-token.txt'
+$monitorIp = '192.0.2.20' # replace with the confirmed Monitor IPv4 address
+
+.\scripts\Install-RunnerObservabilityRunner.ps1 `
+    -Action Preflight -PythonPath $python -InstallRoot $installRoot `
+    -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
+    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
+
+.\scripts\Install-RunnerObservabilityRunner.ps1 `
+    -Action Configure -PythonPath $python -InstallRoot $installRoot `
+    -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
+    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
+```
+
+For `PrivateCa` or `SelfSigned`, pass only the public certificate and the
+operator-confirmed SHA-256 fingerprint; `-ImportCertificate` verifies that
+fingerprint before touching the Windows trust store. `-AllowHostsChange` is a
+separate explicit gate and preserves unrelated hosts entries. If the token
+file is absent, `Configure` prompts using `Read-Host -AsSecureString` and
+creates an ACL-protected file. The token value is never a parameter or
+service argument, and `monitor.key` is rejected on a Runner.
+
+Use the Runner entry point for lifecycle and repair actions. The uninstall
+action removes only the named Heartbeat service and preserves persistent data:
+
+```powershell
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action RepairPermissions -InstallRoot $installRoot -TokenPath $token
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Status -ServiceName 'RunnerObservabilityHeartbeat'
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Start -ServiceName 'RunnerObservabilityHeartbeat'
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Stop -ServiceName 'RunnerObservabilityHeartbeat'
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Restart -ServiceName 'RunnerObservabilityHeartbeat'
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action Uninstall -ServiceName 'RunnerObservabilityHeartbeat'
+```
+
 ## Concepts: pinned revisions, releases, and the atomic switch
 
 - Every install/update names an explicit **pinned revision** (a version
