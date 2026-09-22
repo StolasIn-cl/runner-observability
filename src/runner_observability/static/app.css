@@ -44,6 +44,10 @@ h3 { font-size: 14px; margin: 0 0 6px; }
 .loading-note, .empty-note { color: var(--muted); font-size: 13px; }
 
 .subtitle { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+.refresh-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0 18px; color: var(--muted); font-size: 12px; }
+.refresh-controls button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); color: var(--ink); cursor: pointer; font: inherit; }
+.refresh-controls button:hover { border-color: var(--blue); }
+.refresh-status strong { color: var(--ink); }
 
 .degraded-banner {
   margin: 0 0 20px;

@@ -481,6 +481,16 @@ class DashboardHttpWiringTests(unittest.TestCase):
         self.assertNotIn("background: #e7edf4", css_body)
         self.assertIn(".progress-track", css_body)
 
+    def test_static_assets_define_dashboard_auto_refresh_controls(self) -> None:
+        _, css_body, _ = self.get("/app.css")
+        _, js_body, _ = self.get("/app.js")
+
+        self.assertIn("refresh-toggle", js_body)
+        self.assertIn("last-updated", js_body)
+        self.assertIn("document.visibilityState", js_body)
+        self.assertIn("setInterval", js_body)
+        self.assertIn("refresh-controls", css_body)
+
     def test_api_history_is_paginated_newest_first_and_hides_runner_heartbeats(self) -> None:
         self.store.ingest(heartbeat("60000000-0000-4000-8000-000000000401", 1, 0), at(0))
         for sequence in range(1, 22):

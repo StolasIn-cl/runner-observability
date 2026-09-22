@@ -6,6 +6,8 @@
 (function () {
   "use strict";
 
+  var REFRESH_INTERVAL_MS = 10000;
+
   var state = {
     snapshot: null,
     selectedRunnerId: null,
@@ -13,6 +15,9 @@
     historyEvents: [],
     historyPage: 1,
     historyHasNext: false,
+    autoRefresh: true,
+    lastUpdatedAt: null,
+    refreshInFlight: false,
   };
 
   function badgeClass(kind, value) {
@@ -205,6 +210,7 @@
       '<div class="shell">' +
       "<h1>Runner Observability</h1>" +
       '<p class="subtitle">Command center &middot; generated ' + escapeHtml(snapshot.generated_at) + "</p>" +
+      refreshControls() +
       degradedBanner(snapshot.health) +
       '<div class="command-layout">' +
       '<aside class="surface runner-rail"><div class="rail-title">Runners</div>' +
@@ -244,6 +250,21 @@
         loadHistory();
       }
     });
+
+    var refreshToggle = document.getElementById("refresh-toggle");
+    if (refreshToggle) refreshToggle.addEventListener("click", toggleAutoRefresh);
+  }
+
+  function refreshControls() {
+    var label = state.autoRefresh ? "Pause auto-refresh" : "Resume auto-refresh";
+    var updated = state.lastUpdatedAt ? new Date(state.lastUpdatedAt).toLocaleTimeString() : "never";
+    return (
+      '<div class="refresh-controls">' +
+      '<span class="refresh-status">Auto-refresh: <strong>' + (state.autoRefresh ? "on" : "paused") + "</strong></span>" +
+      '<span id="last-updated">Last updated: ' + escapeHtml(updated) + "</span>" +
+      '<button id="refresh-toggle" type="button">' + label + "</button>" +
+      "</div>"
+    );
   }
 
   function degradedBanner(health) {
@@ -334,6 +355,7 @@
       .then(function (response) { return response.json(); })
       .then(function (data) {
         state.snapshot = data;
+        state.lastUpdatedAt = new Date().toISOString();
         render();
       })
       .catch(function () {
@@ -367,5 +389,34 @@
       });
   }
 
-  loadDashboard().then(loadHistory);
+  function refreshAll() {
+    if (state.refreshInFlight) return Promise.resolve();
+    state.refreshInFlight = true;
+    return loadDashboard()
+      .then(loadHistory)
+      .then(function () {
+        state.refreshInFlight = false;
+      }, function (error) {
+        state.refreshInFlight = false;
+        throw error;
+      });
+  }
+
+  function toggleAutoRefresh() {
+    state.autoRefresh = !state.autoRefresh;
+    render();
+    if (state.autoRefresh && document.visibilityState === "visible") refreshAll();
+  }
+
+  function startAutoRefresh() {
+    window.setInterval(function () {
+      if (state.autoRefresh && document.visibilityState === "visible") refreshAll();
+    }, REFRESH_INTERVAL_MS);
+    document.addEventListener("visibilitychange", function () {
+      if (state.autoRefresh && document.visibilityState === "visible") refreshAll();
+    });
+  }
+
+  startAutoRefresh();
+  refreshAll();
 })();

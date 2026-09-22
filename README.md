@@ -635,6 +635,129 @@ file contents, and the underlying `ssl`/`OSError` exception text are never
 included in any diagnostic. See "Native TLS/HTTPS support" below and
 `docs/runbook.md` for the full contract.
 
+### Monitor Host package deployment (Windows service model)
+
+The currently verified Monitor Host runs `RunnerObservabilityMonitor` as
+`NT AUTHORITY\LocalService`. Its service command imports the package from the
+Python installation's global `site-packages` directory. This is a different
+deployment model from the managed Runner release layout described in
+"Existing Runner update and component restart rules" above.
+
+Before changing anything, run the Step 0 inventory and confirm the actual
+Python path, global `site-packages` path, service name, service account, and
+service command on the target machine. Use the procedure below only when the
+inventory confirms this same global-package service model. Do not print the
+token, private key, or certificate contents.
+
+The repository root is not necessarily a clean build input. An old
+`build\lib` tree can contain older dashboard assets, and setuptools may reuse
+those files when pip builds directly from the working tree. Never deploy with
+`--user`: the service runs as `LocalService` and does not use the interactive
+user's site-packages directory. Do not rerun the first-install service script
+when the service already exists.
+
+Run the following from an elevated PowerShell window. It creates a temporary
+release copy that excludes generated build output, installs that copy into the
+verified global package directory, restores the package read permission needed
+by `LocalService`, verifies the deployed dashboard asset, and then restarts
+only the verified service:
+
+```powershell
+$source = 'C:\Users\<user>\Desktop\runner-observability'
+$python = 'C:\Users\<user>\AppData\Local\Programs\Python\Python311\python.exe'
+$globalSite = 'C:\Users\<user>\AppData\Local\Programs\Python\Python311\Lib\site-packages'
+$serviceName = 'RunnerObservabilityMonitor'
+
+# Read-only target checks. Stop if any path or service differs from inventory.
+if (-not (Test-Path -LiteralPath (Join-Path $source 'pyproject.toml'))) {
+    throw 'Repository source or pyproject.toml was not found'
+}
+if (-not (Test-Path -LiteralPath $python)) {
+    throw 'Verified Python executable was not found'
+}
+$service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+if ($null -eq $service) {
+    throw "Verified service '$serviceName' was not found"
+}
+if ($service.StartName -ne 'NT AUTHORITY\LocalService') {
+    throw "Unexpected service account: $($service.StartName)"
+}
+
+$clean = Join-Path $env:TEMP ('runner-observability-release-' + [guid]::NewGuid().ToString('N'))
+$exclude = @(
+    (Join-Path $source '.git')
+    (Join-Path $source 'build')
+    (Join-Path $source 'src\runner_observability.egg-info')
+)
+New-Item -ItemType Directory -Path $clean -Force | Out-Null
+& robocopy.exe $source $clean /E /XD $exclude /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -gt 7) {
+    throw "Clean release copy failed with robocopy exit code $LASTEXITCODE"
+}
+
+$sourceAsset = Join-Path $source 'src\runner_observability\static\app.js'
+$cleanAsset = Join-Path $clean 'src\runner_observability\static\app.js'
+if (-not (Test-Path -LiteralPath $cleanAsset)) {
+    throw 'Clean release copy is missing the dashboard asset'
+}
+
+& $python -m pip install --upgrade --force-reinstall --no-cache-dir --no-deps --target $globalSite $clean
+if ($LASTEXITCODE -ne 0) {
+    throw 'Monitor package deployment failed'
+}
+
+$packageRoot = Join-Path $globalSite 'runner_observability'
+& icacls.exe $packageRoot /grant 'NT AUTHORITY\LOCAL SERVICE:(OI)(CI)(RX)' /T /C
+if ($LASTEXITCODE -ne 0) {
+    throw 'Monitor package ACL update failed'
+}
+
+$installedAsset = Join-Path $packageRoot 'static\app.js'
+$sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceAsset).Hash
+$cleanHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $cleanAsset).Hash
+$installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedAsset).Hash
+if (($sourceHash -ne $cleanHash) -or ($sourceHash -ne $installedHash)) {
+    throw 'Installed monitor dashboard asset does not match the source asset'
+}
+& $python -s -c "import runner_observability; print(runner_observability.__file__)"
+if ($LASTEXITCODE -ne 0) {
+    throw 'Installed monitor package import failed'
+}
+
+Restart-Service -Name $serviceName
+Start-Sleep -Seconds 5
+$serviceStatus = Get-Service -Name $serviceName
+if ($serviceStatus.Status -ne 'Running') {
+    throw "Monitor service is not running: $($serviceStatus.Status)"
+}
+$listener = @(Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue)
+if ($listener.Count -eq 0) {
+    throw 'Monitor is not listening on port 8765'
+}
+$serviceStatus
+$listener |
+    Select-Object LocalAddress, LocalPort, State
+```
+
+The `pip` success message alone is not sufficient: it only proves that a
+wheel was built and copied. The hash check proves that the deployed dashboard
+asset came from the intended source, and the `icacls` step is required because
+an installation into `site-packages` can replace the package directory's ACL.
+If the service still fails to start, stop retrying and inspect the package ACL,
+the installed asset hash, and the recent `RunnerObservabilityMonitor` and
+Service Control Manager events. Do not change the token/key/configuration or
+delete database rows as a first diagnostic step.
+
+After the service is listening, open the dashboard and confirm that the
+`Auto-refresh: on`, `Pause auto-refresh`, and `Last updated` controls are
+visible and changing. A dashboard-only deployment does not require a Runner
+restart. The temporary clean copy may be removed after verification with its
+exact generated path, for example:
+
+```powershell
+Remove-Item -LiteralPath $clean -Recurse -Force
+```
+
 ### Native TLS/HTTPS support (issue #7)
 
 Before this ticket, `create_server()` always built a plain
