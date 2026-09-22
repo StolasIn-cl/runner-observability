@@ -9,8 +9,10 @@
     bootstrap and service adapters.
 
     SelfSigned is an explicit development/test mode. It uses the Windows
-    .NET CertificateRequest API and in-script PEM encoders, with no external
-    certificate-generation fallback.
+    .NET CertificateRequest API when available and falls back to the Windows
+    PKI New-SelfSignedCertificate cmdlet when the host runtime lacks modern
+    PKCS#8 export methods. Private-key encoding remains in-script and requires
+    no external certificate tool.
 #>
 [CmdletBinding()]
 param(
@@ -72,6 +74,90 @@ function ConvertTo-MonitorPem {
     return $builder.ToString()
 }
 
+function ConvertTo-MonitorDerLength {
+    param([Parameter(Mandatory = $true)][int]$Length)
+
+    if ($Length -lt 128) {
+        return ,([byte[]]@([byte]$Length))
+    }
+
+    $octets = New-Object 'System.Collections.Generic.List[byte]'
+    $remaining = $Length
+    while ($remaining -gt 0) {
+        $octets.Insert(0, [byte]($remaining -band 0xff))
+        $remaining = [int][Math]::Floor($remaining / 256)
+    }
+    $encoded = New-Object 'System.Collections.Generic.List[byte]'
+    $encoded.Add([byte](0x80 -bor $octets.Count))
+    $encoded.AddRange($octets.ToArray())
+    return ,([byte[]]$encoded.ToArray())
+}
+
+function ConvertTo-MonitorDerTlv {
+    param(
+        [Parameter(Mandatory = $true)][byte]$Tag,
+        [byte[]]$Content
+    )
+
+    $encoded = New-Object 'System.Collections.Generic.List[byte]'
+    $encoded.Add($Tag)
+    $encoded.AddRange((ConvertTo-MonitorDerLength -Length $Content.Length))
+    $encoded.AddRange($Content)
+    return ,([byte[]]$encoded.ToArray())
+}
+
+function ConvertTo-MonitorDerInteger {
+    param([Parameter(Mandatory = $true)][byte[]]$Value)
+
+    $first = 0
+    while (($first -lt ($Value.Length - 1)) -and ($Value[$first] -eq 0)) {
+        $first++
+    }
+
+    $content = New-Object 'System.Collections.Generic.List[byte]'
+    if (($Value[$first] -band 0x80) -ne 0) {
+        $content.Add([byte]0)
+    }
+    for ($index = $first; $index -lt $Value.Length; $index++) {
+        $content.Add($Value[$index])
+    }
+    return ,(ConvertTo-MonitorDerTlv -Tag 0x02 -Content ([byte[]]$content.ToArray()))
+}
+
+function ConvertTo-MonitorPkcs8Pem {
+    param([Parameter(Mandatory = $true)][Security.Cryptography.RSAParameters]$Parameters)
+
+    $rsaPrivateKey = New-Object 'System.Collections.Generic.List[byte]'
+    foreach ($component in @(
+            [byte[]]@([byte]0),
+            $Parameters.Modulus,
+            $Parameters.Exponent,
+            $Parameters.D,
+            $Parameters.P,
+            $Parameters.Q,
+            $Parameters.DP,
+            $Parameters.DQ,
+            $Parameters.InverseQ
+        )) {
+        $rsaPrivateKey.AddRange((ConvertTo-MonitorDerInteger -Value $component))
+    }
+    $rsaPrivateKeyDer = ConvertTo-MonitorDerTlv -Tag 0x30 -Content ([byte[]]$rsaPrivateKey.ToArray())
+
+    $algorithmIdentifier = New-Object 'System.Collections.Generic.List[byte]'
+    $algorithmIdentifier.AddRange((ConvertTo-MonitorDerTlv -Tag 0x06 -Content ([byte[]]@(
+                0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01
+            ))))
+    $algorithmIdentifier.AddRange((ConvertTo-MonitorDerTlv -Tag 0x05 -Content ([byte[]]@())))
+    $algorithmIdentifierDer = ConvertTo-MonitorDerTlv -Tag 0x30 -Content ([byte[]]$algorithmIdentifier.ToArray())
+
+    $privateKeyInfo = New-Object 'System.Collections.Generic.List[byte]'
+    $privateKeyInfo.AddRange((ConvertTo-MonitorDerInteger -Value ([byte[]]@([byte]0))))
+    $privateKeyInfo.AddRange($algorithmIdentifierDer)
+    $privateKeyInfo.AddRange((ConvertTo-MonitorDerTlv -Tag 0x04 -Content $rsaPrivateKeyDer))
+    $privateKeyInfoDer = ConvertTo-MonitorDerTlv -Tag 0x30 -Content ([byte[]]$privateKeyInfo.ToArray())
+    return ConvertTo-MonitorPem -Bytes $privateKeyInfoDer -Label "PRIVATE KEY"
+}
+
 function Write-MonitorProtectedTextAtomically {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -108,15 +194,21 @@ function Test-MonitorCertificateGenerationAvailable {
     $rsa = $null
     try {
         $requestType = "System.Security.Cryptography.X509Certificates.CertificateRequest" -as [Type]
-        if ($null -eq $requestType) {
-            return $false
-        }
         $rsa = [Security.Cryptography.RSA]::Create(2048)
         if ($rsa.KeySize -ne 2048) {
-            return $false
+            throw "rsa_key_size_invalid"
         }
-        $exportMethod = $rsa.GetType().GetMethod("ExportPkcs8PrivateKey", [Type[]]@())
-        return ($null -ne $exportMethod)
+        try {
+            $parameters = $rsa.ExportParameters($true)
+            $hasExportableParameters = ($null -ne $parameters.Modulus) -and ($null -ne $parameters.D)
+        }
+        catch {
+            $hasExportableParameters = $false
+        }
+        if (($null -ne $requestType) -and $hasExportableParameters) {
+            return $true
+        }
+        return ($null -ne (Get-Command New-SelfSignedCertificate -ErrorAction SilentlyContinue))
     }
     catch {
         return $false
@@ -148,35 +240,87 @@ function New-MonitorSelfSignedCertificate {
     New-Item -ItemType Directory -Path $keyParent -Force | Out-Null
 
     $rsa = $null
+    $privateKeyProvider = $null
+    $certificateStore = $null
     $certificate = $null
     $temporaryCertificate = Join-Path $certParent ("." + (Split-Path -Leaf $CertificatePath) + "." + [guid]::NewGuid().ToString("N") + ".tmp")
     $temporaryKey = Join-Path $keyParent ("." + (Split-Path -Leaf $PrivateKeyPath) + "." + [guid]::NewGuid().ToString("N") + ".tmp")
     try {
-        $rsa = [Security.Cryptography.RSA]::Create(2048)
-        $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
-            "CN=monitor-test.local",
-            $rsa,
-            [Security.Cryptography.HashAlgorithmName]::SHA256,
-            [Security.Cryptography.RSASignaturePadding]::Pkcs1
-        )
-        $request.CertificateExtensions.Add(
-            [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $false)
-        )
-        $request.CertificateExtensions.Add(
-            [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
-                [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
-                $false
-            )
-        )
-        $san = [Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder]::new()
-        $san.AddDnsName("monitor-test.local")
-        $request.CertificateExtensions.Add($san.Build())
+        $requestType = "System.Security.Cryptography.X509Certificates.CertificateRequest" -as [Type]
+        $parameters = $null
+        if ($null -ne $requestType) {
+            try {
+                $rsa = [Security.Cryptography.RSA]::Create(2048)
+                $parameters = $rsa.ExportParameters($true)
+            }
+            catch {
+                if ($null -ne $rsa) {
+                    $rsa.Dispose()
+                    $rsa = $null
+                }
+            }
+        }
 
-        $notBefore = [DateTimeOffset]::UtcNow.AddMinutes(-5)
-        $notAfter = [DateTimeOffset]::UtcNow.AddYears(1)
-        $certificate = $request.CreateSelfSigned($notBefore, $notAfter)
+        if ($null -ne $rsa) {
+            $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new(
+                "CN=monitor-test.local",
+                $rsa,
+                [Security.Cryptography.HashAlgorithmName]::SHA256,
+                [Security.Cryptography.RSASignaturePadding]::Pkcs1
+            )
+            $request.CertificateExtensions.Add(
+                [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $false)
+            )
+            $request.CertificateExtensions.Add(
+                [Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+                    [Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
+                    $false
+                )
+            )
+            $san = [Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder]::new()
+            $san.AddDnsName("monitor-test.local")
+            $request.CertificateExtensions.Add($san.Build())
+
+            $notBefore = [DateTimeOffset]::UtcNow.AddMinutes(-5)
+            $notAfter = [DateTimeOffset]::UtcNow.AddYears(1)
+            $certificate = $request.CreateSelfSigned($notBefore, $notAfter)
+        }
+        else {
+            $nativeGenerator = Get-Command New-SelfSignedCertificate -ErrorAction SilentlyContinue
+            if ($null -eq $nativeGenerator) {
+                throw (New-MonitorStableError -Reason "certificate_generation_unavailable")
+            }
+            $certificateStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("My", "CurrentUser")
+            $certificateStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+            $certificate = New-SelfSignedCertificate `
+                -Subject "CN=monitor-test.local" `
+                -DnsName "monitor-test.local" `
+                -CertStoreLocation "Cert:\CurrentUser\My" `
+                -KeyAlgorithm RSA `
+                -KeyLength 2048 `
+                -HashAlgorithm SHA256 `
+                -KeyExportPolicy Exportable `
+                -NotAfter ([DateTime]::UtcNow.AddYears(1))
+            $privateKeyProvider = $certificate.PrivateKey
+            if ($null -eq $privateKeyProvider) {
+                $rsaExtensionsType = "System.Security.Cryptography.X509Certificates.RSACertificateExtensions" -as [Type]
+                if ($null -ne $rsaExtensionsType) {
+                    $getPrivateKeyMethod = $rsaExtensionsType.GetMethod(
+                        "GetRSAPrivateKey",
+                        [Type[]]@([Security.Cryptography.X509Certificates.X509Certificate2])
+                    )
+                    if ($null -ne $getPrivateKeyMethod) {
+                        $privateKeyProvider = $getPrivateKeyMethod.Invoke($null, @($certificate))
+                    }
+                }
+            }
+            if ($null -eq $privateKeyProvider) {
+                throw (New-MonitorStableError -Reason "certificate_generation_unavailable")
+            }
+            $parameters = $privateKeyProvider.ExportParameters($true)
+        }
         $certificatePem = ConvertTo-MonitorPem -Bytes $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert) -Label "CERTIFICATE"
-        $privateKeyPem = ConvertTo-MonitorPem -Bytes $rsa.ExportPkcs8PrivateKey() -Label "PRIVATE KEY"
+        $privateKeyPem = ConvertTo-MonitorPkcs8Pem -Parameters $parameters
 
         Write-MonitorProtectedTextAtomically -Path $temporaryCertificate -Contents $certificatePem -ServiceAccount $ServiceAccount
         Write-MonitorProtectedTextAtomically -Path $temporaryKey -Contents $privateKeyPem -ServiceAccount $ServiceAccount
@@ -207,7 +351,16 @@ function New-MonitorSelfSignedCertificate {
     }
     finally {
         if ($null -ne $certificate) {
+            if ($null -ne $certificateStore) {
+                try { $certificateStore.Remove($certificate) } catch { }
+            }
             $certificate.Dispose()
+        }
+        if ($null -ne $certificateStore) {
+            $certificateStore.Close()
+        }
+        if ($null -ne $privateKeyProvider) {
+            $privateKeyProvider.Dispose()
         }
         if ($null -ne $rsa) {
             $rsa.Dispose()

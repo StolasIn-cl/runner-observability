@@ -89,10 +89,13 @@ $runnerIp = '192.0.2.10' # replace with the confirmed Runner IPv4 address
 For development/test only, `SelfSigned` requires the explicit
 `-AllowDevSelfSigned` switch. Missing parent directories are created before
 generation. The script uses Windows/.NET `CertificateRequest` and a 2048-bit
-RSA key, exports the certificate as PEM, and encodes the private key as
-in-script PKCS#8 PEM. It does not invoke OpenSSL. If the required API is not
-available it stops with the stable reason
-`certificate_generation_unavailable` and does not start the service.
+RSA key when the modern export APIs are available. Windows PowerShell 5.1 does
+not expose `ExportPkcs8PrivateKey`, so the script uses the Windows PKI
+`New-SelfSignedCertificate` capability or the available RSA provider and the
+same in-script PKCS#8 encoder. It exports the certificate as PEM, does not
+invoke OpenSSL, and stops with the stable reason
+`certificate_generation_unavailable` only when neither Windows generation path
+is available. It does not start the service after that failure.
 
 ```powershell
 .\scripts\Install-RunnerObservabilityMonitor.ps1 `

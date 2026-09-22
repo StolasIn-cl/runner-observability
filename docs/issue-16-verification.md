@@ -6,7 +6,7 @@ are recorded.
 
 ## Local verification
 
-- Targeted onboarding/service suite: 72 tests passed.
+- Targeted onboarding/service suite: 74 tests passed.
 - PowerShell parser: Monitor, Runner, shared Bootstrap, Monitor service, and
   Heartbeat service scripts all parsed successfully.
 - Monitor `Preflight` was executed on `STOLASIN-DT2` with the inventory-confirmed
@@ -14,12 +14,25 @@ are recorded.
   Runner DNS addresses; result: `preflight_passed`.
 - Monitor `Status` was executed read-only; result: `service_state=running`.
 - The Monitor self-signed generator was exercised in a clean temporary
-  directory with ACL calls stubbed only for this local seam check: generated
-  PEM certificate/key, RSA key size 2048, 64-character SHA-256 fingerprint,
-  and expiry metadata all verified without printing key contents.
+  directory with ACL calls stubbed only for this local seam check under
+  Windows PowerShell 5.1: generated PEM certificate/key, RSA key size 2048,
+  64-character SHA-256 fingerprint, and expiry metadata all verified without
+  printing key contents. Python's TLS loader also accepted the generated pair.
 - The current terminal is not elevated, so ACL-protected service/config/key
   mutation could not be executed by this session. Run the live block below
   from an elevated PowerShell prompt on the Monitor Host.
+
+## Live acceptance attempt
+
+- The operator successfully removed the named Monitor service and the three
+  requested secret files, then attempted a clean `SelfSigned` install.
+- The install stopped at `certificate_generation_unavailable` under Windows
+  PowerShell 5.1 because the previous implementation required the unavailable
+  `ExportPkcs8PrivateKey` API. The subsequent `Start`, `Status`, and port
+  checks therefore observed the expected absent-service state.
+- The implementation now encodes PKCS#8 from exportable RSA parameters and has
+  a Windows PKI fallback for older hosts. Re-run the live block after pulling
+  this change; do not reuse the removed secret files.
 
 ## Known baseline
 
@@ -50,6 +63,10 @@ Remove-Item -LiteralPath 'C:\runner-observability-secrets\monitor-token.txt','C:
 Get-NetTCPConnection -LocalPort 8765 -State Listen
 Invoke-WebRequest -Uri 'https://127.0.0.1:8765/api/health' -SkipCertificateCheck
 ```
+
+`-SkipCertificateCheck` is available in PowerShell 7. In Windows PowerShell
+5.1, use `curl.exe -k https://127.0.0.1:8765/api/health` for the same local
+self-signed health check.
 
 Record only service state, listener PID, HTTP status/body health fields,
 certificate fingerprint/expiry metadata, and firewall remote addresses.

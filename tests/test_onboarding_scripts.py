@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -402,7 +403,10 @@ class MonitorRoleScriptStaticContractTests(unittest.TestCase):
             "2048",
             "CreateSelfSigned",
             "X509ContentType]::Cert",
-            "ExportPkcs8PrivateKey",
+            "ConvertTo-MonitorPkcs8Pem",
+            "ExportParameters",
+            "New-SelfSignedCertificate",
+            "KeyExportPolicy",
             "Label \"CERTIFICATE\"",
             "Label \"PRIVATE KEY\"",
             "certificate_generation_unavailable",
@@ -420,6 +424,82 @@ class MonitorRoleScriptStaticContractTests(unittest.TestCase):
             self.script_text.index("Set-RunnerObservabilityFileAcl -Path $temporaryPath"),
             self.script_text.index("WriteAllText($temporaryPath"),
         )
+
+    def test_monitor_self_signed_preflight_supports_windows_powershell_crypto_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = f"""
+& {powershell_literal(MONITOR_SCRIPT)} `
+    -Action Preflight `
+    -PythonPath (Get-Command python).Source `
+    -ConfigPath {powershell_literal(root / 'config' / 'service-config.json')} `
+    -DatabasePath {powershell_literal(root / 'data' / 'monitor.sqlite')} `
+    -SecretRoot {powershell_literal(root / 'secrets')} `
+    -CertificateMode SelfSigned `
+    -AllowDevSelfSigned `
+    -RunnerAddress '192.0.2.1'
+"""
+            completed = run_powershell(script)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+            payload = json.loads(completed.stdout.strip().splitlines()[-1])
+            self.assertEqual(payload["Reason"], "preflight_passed")
+
+    def test_monitor_self_signed_generates_python_tls_compatible_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cert_path = root / "secrets" / "monitor.crt"
+            key_path = root / "secrets" / "monitor.key"
+            script = f"""
+$parameters = @{{
+    Action = 'Preflight'
+    PythonPath = (Get-Command python).Source
+    ConfigPath = {powershell_literal(root / 'config' / 'service-config.json')}
+    DatabasePath = {powershell_literal(root / 'data' / 'monitor.sqlite')}
+    SecretRoot = {powershell_literal(root / 'secrets')}
+    CertificateMode = 'SelfSigned'
+    AllowDevSelfSigned = $true
+    RunnerAddress = @('192.0.2.1')
+    ServiceAccount = 'CurrentUser'
+}}
+. {powershell_literal(MONITOR_SCRIPT)} @parameters | Out-Null
+function Set-RunnerObservabilityFileAcl {{
+    param([string]$Path, [string]$ServiceAccount)
+}}
+$metadata = New-MonitorSelfSignedCertificate `
+    -CertificatePath {powershell_literal(cert_path)} `
+    -PrivateKeyPath {powershell_literal(key_path)}
+[pscustomobject]@{{
+    FingerprintLength = $metadata.Fingerprint.Length
+    CertificateExists = Test-Path -LiteralPath {powershell_literal(cert_path)} -PathType Leaf
+    PrivateKeyExists = Test-Path -LiteralPath {powershell_literal(key_path)} -PathType Leaf
+    CertificatePem = ([IO.File]::ReadAllText({powershell_literal(cert_path)})).Trim().StartsWith('-----BEGIN CERTIFICATE-----')
+    PrivateKeyPem = ([IO.File]::ReadAllText({powershell_literal(key_path)})).Trim().StartsWith('-----BEGIN PRIVATE KEY-----')
+}} | ConvertTo-Json -Compress
+"""
+            completed = run_powershell(script)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+            payload = json.loads(completed.stdout.strip().splitlines()[-1])
+            self.assertEqual(payload["FingerprintLength"], 64)
+            self.assertTrue(payload["CertificateExists"])
+            self.assertTrue(payload["PrivateKeyExists"])
+            self.assertTrue(payload["CertificatePem"])
+            self.assertTrue(payload["PrivateKeyPem"])
+
+            tls_check = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import ssl, sys; ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_cert_chain(sys.argv[1], sys.argv[2])",
+                    str(cert_path),
+                    str(key_path),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(tls_check.returncode, 0, tls_check.stderr)
 
     def test_monitor_script_keeps_token_and_private_key_out_of_commands_and_output(self) -> None:
         self.assertNotRegex(self.script_text, r"(?im)^\s*\[string\]\$Token\b")

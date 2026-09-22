@@ -158,11 +158,15 @@ $runnerIp = '192.0.2.10' # replace with the inventory-confirmed Runner address
 
 For an explicitly approved development/test certificate, choose `SelfSigned`
 and `-AllowDevSelfSigned`. The script creates missing parent directories, then
-uses Windows/.NET `CertificateRequest` with a 2048-bit RSA key. It writes the
-certificate as PEM and the private key as in-script PKCS#8 PEM; it never calls
-OpenSSL. If that .NET API is unavailable it fails closed with
-`certificate_generation_unavailable` and does not start the service. A
-`monitor.key` is never copied to a Runner.
+uses Windows/.NET `CertificateRequest` with a 2048-bit RSA key when the modern
+export APIs are available. On Windows PowerShell 5.1, where
+`ExportPkcs8PrivateKey` is absent, it uses the Windows PKI
+`New-SelfSignedCertificate` capability or the available RSA provider and the
+same in-script PKCS#8 encoder. It writes the certificate as PEM and the
+private key as PKCS#8 PEM; it never calls OpenSSL. It fails closed with
+`certificate_generation_unavailable` only when neither Windows certificate
+generation path is available, and does not start the service. A `monitor.key`
+is never copied to a Runner.
 
 ```powershell
 .\scripts\Install-RunnerObservabilityMonitor.ps1 `
