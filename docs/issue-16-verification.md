@@ -13,6 +13,10 @@ are recorded.
   Python, config/data/secret paths, existing certificate pair, and confirmed
   Runner DNS addresses; result: `preflight_passed`.
 - Monitor `Status` was executed read-only; result: `service_state=running`.
+- The Monitor self-signed generator was exercised in a clean temporary
+  directory with ACL calls stubbed only for this local seam check: generated
+  PEM certificate/key, RSA key size 2048, 64-character SHA-256 fingerprint,
+  and expiry metadata all verified without printing key contents.
 - The current terminal is not elevated, so ACL-protected service/config/key
   mutation could not be executed by this session. Run the live block below
   from an elevated PowerShell prompt on the Monitor Host.
