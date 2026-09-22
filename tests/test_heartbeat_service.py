@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from io import StringIO
+import subprocess
 from unittest.mock import patch
 
 from runner_observability.heartbeat import HeartbeatConfig
@@ -21,6 +22,27 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "Install-RunnerHeartbeatService.ps1"
 MODULE = ROOT / "scripts" / "RunnerHeartbeat.Service.psm1"
 RUNBOOK = ROOT / "docs" / "runbook.md"
+POWERSHELL = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+
+
+def run_powershell(script: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(POWERSHELL),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$ErrorActionPreference = 'Stop'\n" + script,
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
 
 
 class _FakeServiceManager:
@@ -151,8 +173,8 @@ class HeartbeatServiceTests(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, source)
-        self.assertIn('if ($state -eq "Running")', source)
-        self.assertIn('$state -eq "Stopped"', source)
+        self.assertIn('if ($state -eq "running")', source)
+        self.assertIn('$state -eq "stopped"', source)
 
     def test_uninstall_stops_before_delete_and_verifies_absence(self) -> None:
         script = SCRIPT.read_text(encoding="utf-8")
@@ -170,6 +192,55 @@ class HeartbeatServiceTests(unittest.TestCase):
         self.assertIn("heartbeat_service run --config", source)
         self.assertNotIn("--token ", source)
         self.assertNotIn("--endpoint ", source)
+
+    def test_exported_state_contract_is_lowercase_and_hides_pending_states(self) -> None:
+        source = MODULE.read_text(encoding="utf-8")
+        for state in ('"running"', '"stopped"', '"unknown"', '"absent"'):
+            self.assertIn("return " + state, source)
+        self.assertIn("start_pending", source)
+        self.assertIn("stop_pending", source)
+
+    def test_pending_states_are_polled_before_start_stop_or_delete_commands(self) -> None:
+        source = MODULE.read_text(encoding="utf-8")
+        start = source[source.index("function Start-RunnerHeartbeatService") :]
+        stop = source[source.index("function Stop-RunnerHeartbeatService") :]
+        remove = source[source.index("function Remove-RunnerHeartbeatService") :]
+        self.assertLess(start.index('"start_pending"'), start.index('"start"'))
+        self.assertLess(start.index('"stop_pending"'), start.index('"start"'))
+        self.assertLess(stop.index('"start_pending"'), stop.index('"stop"'))
+        self.assertLess(stop.index('"stop_pending"'), stop.index('"stop"'))
+        self.assertIn("Stop-RunnerHeartbeatService", remove)
+        self.assertLess(remove.index("Stop-RunnerHeartbeatService"), remove.index('"delete"'))
+
+    def test_delayed_cim_read_cannot_satisfy_wait_after_deadline(self) -> None:
+        if not POWERSHELL.is_file():
+            self.skipTest("Windows PowerShell required")
+        script = f"""
+$module = Import-Module '{MODULE}' -Force -PassThru
+& $module {{
+    function Get-RunnerHeartbeatServiceRecord {{
+        Start-Sleep -Milliseconds 1200
+        return [pscustomobject]@{{ State = 'Running' }}
+    }}
+    try {{
+        Wait-RunnerHeartbeatServiceState -ServiceName 'DelayedRead' -DesiredState Running -TimeoutSeconds 1 -PollMilliseconds 25
+        exit 2
+    }} catch {{
+        if ($_.Exception.Message -ne 'service_state_timeout') {{ exit 3 }}
+    }}
+}}
+exit 0
+"""
+        completed = run_powershell(script)
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_installer_reason_mapping_writes_direct_stderr_under_stop_preference(self) -> None:
+        script = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("[System.Console]::Error.WriteLine", script)
+        self.assertNotIn("Write-Error", script)
+        self.assertIn("exit 2", script)
+        for reason in ("service_already_exists", "service_state_timeout"):
+            self.assertIn(reason, script)
 
     def test_runbook_documents_runner_heartbeat_service(self) -> None:
         source = RUNBOOK.read_text(encoding="utf-8")

@@ -97,6 +97,6 @@ catch {
     if ($reason -notin @("service_already_exists", "service_state_timeout")) {
         $reason = "service_operation_failed"
     }
-    Write-Error ("service operation failed reason=" + $reason)
+    [System.Console]::Error.WriteLine("service operation failed reason=" + $reason)
     exit 2
 }

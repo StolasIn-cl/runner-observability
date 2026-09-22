@@ -137,13 +137,17 @@ function Remove-RunnerObservabilityFirewallRule {
 
 function Get-RunnerObservabilityServiceRecord {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$ServiceName)
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [ValidateRange(1, 600)][int]$OperationTimeoutSeconds = 5
+    )
 
     try {
         $escapedServiceName = $ServiceName.Replace("'", "''")
         return Get-CimInstance `
             -ClassName Win32_Service `
             -Filter ("Name = '{0}'" -f $escapedServiceName) `
+            -OperationTimeoutSec $OperationTimeoutSeconds `
             -ErrorAction Stop
     }
     catch {
@@ -151,26 +155,52 @@ function Get-RunnerObservabilityServiceRecord {
     }
 }
 
+function Convert-RunnerObservabilityServiceRecordToControlState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][object]$Service)
+
+    if ($null -eq $Service) {
+        return "absent"
+    }
+    switch (([string]$Service.State).Trim().ToLowerInvariant()) {
+        "running" { return "running" }
+        "stopped" { return "stopped" }
+        "start pending" { return "start_pending" }
+        "stop pending" { return "stop_pending" }
+        default { return "unknown" }
+    }
+}
+
+function Get-RunnerObservabilityServiceControlState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [ValidateRange(1, 600)][int]$OperationTimeoutSeconds = 5
+    )
+
+    $service = Get-RunnerObservabilityServiceRecord `
+        -ServiceName $ServiceName `
+        -OperationTimeoutSeconds $OperationTimeoutSeconds
+    return Convert-RunnerObservabilityServiceRecordToControlState -Service $service
+}
+
 function Get-RunnerObservabilityServiceState {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    $service = Get-RunnerObservabilityServiceRecord -ServiceName $ServiceName
-    if ($null -eq $service) {
-        return "Absent"
+    switch (Get-RunnerObservabilityServiceControlState -ServiceName $ServiceName) {
+        "running" { return "running" }
+        "stopped" { return "stopped" }
+        "absent" { return "absent" }
+        default { return "unknown" }
     }
-    $state = [string]$service.State
-    if ([string]::IsNullOrWhiteSpace($state)) {
-        return "Unknown"
-    }
-    return $state
 }
 
 function Assert-RunnerObservabilityServiceAbsent {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    if ((Get-RunnerObservabilityServiceState -ServiceName $ServiceName) -ne "Absent") {
+    if ((Get-RunnerObservabilityServiceState -ServiceName $ServiceName) -ne "absent") {
         throw [System.InvalidOperationException]::new("service_already_exists")
     }
 }
@@ -185,15 +215,36 @@ function Wait-RunnerObservabilityServiceState {
     )
 
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $deadline = $TimeoutSeconds
+    $desiredState = $DesiredState.ToLowerInvariant()
     while ($true) {
-        $state = Get-RunnerObservabilityServiceState -ServiceName $ServiceName
-        if ($state -eq $DesiredState) {
-            return $state
-        }
-        if ($stopwatch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+        if ($stopwatch.Elapsed.TotalSeconds -ge $deadline) {
             break
         }
-        Start-Sleep -Milliseconds $PollMilliseconds
+        $remainingSeconds = $deadline - $stopwatch.Elapsed.TotalSeconds
+        $readTimeoutSeconds = [Math]::Max(1, [Math]::Min(5, [int][Math]::Ceiling($remainingSeconds)))
+        try {
+            $state = Get-RunnerObservabilityServiceControlState `
+                -ServiceName $ServiceName `
+                -OperationTimeoutSeconds $readTimeoutSeconds
+        }
+        catch {
+            if ($stopwatch.Elapsed.TotalSeconds -ge $deadline) {
+                break
+            }
+            throw
+        }
+        if ($stopwatch.Elapsed.TotalSeconds -ge $deadline) {
+            break
+        }
+        if ($state -eq $desiredState) {
+            return $state
+        }
+        $remainingMilliseconds = [int][Math]::Floor(($deadline - $stopwatch.Elapsed.TotalSeconds) * 1000)
+        if ($remainingMilliseconds -le 0) {
+            break
+        }
+        Start-Sleep -Milliseconds ([Math]::Min($PollMilliseconds, $remainingMilliseconds))
     }
     throw [System.InvalidOperationException]::new("service_state_timeout")
 }
@@ -227,9 +278,15 @@ function Start-RunnerObservabilityService {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    $state = Get-RunnerObservabilityServiceState -ServiceName $ServiceName
-    if ($state -eq "Running") {
+    $state = Get-RunnerObservabilityServiceControlState -ServiceName $ServiceName
+    if ($state -eq "running") {
         return $state
+    }
+    if ($state -eq "start_pending") {
+        return Wait-RunnerObservabilityServiceState -ServiceName $ServiceName -DesiredState "Running"
+    }
+    if ($state -eq "stop_pending") {
+        Wait-RunnerObservabilityServiceState -ServiceName $ServiceName -DesiredState "Stopped" | Out-Null
     }
     Invoke-RunnerObservabilityNativeCommand -FilePath "sc.exe" -ArgumentList @("start", $ServiceName) | Out-Null
     return Wait-RunnerObservabilityServiceState -ServiceName $ServiceName -DesiredState "Running"
@@ -239,9 +296,15 @@ function Stop-RunnerObservabilityService {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    $state = Get-RunnerObservabilityServiceState -ServiceName $ServiceName
-    if (($state -eq "Stopped") -or ($state -eq "Absent")) {
+    $state = Get-RunnerObservabilityServiceControlState -ServiceName $ServiceName
+    if (($state -eq "stopped") -or ($state -eq "absent")) {
         return $state
+    }
+    if ($state -eq "start_pending") {
+        Wait-RunnerObservabilityServiceState -ServiceName $ServiceName -DesiredState "Running" | Out-Null
+    }
+    if ($state -eq "stop_pending") {
+        return Wait-RunnerObservabilityServiceState -ServiceName $ServiceName -DesiredState "Stopped"
     }
     Invoke-RunnerObservabilityNativeCommand -FilePath "sc.exe" -ArgumentList @("stop", $ServiceName) | Out-Null
     return Wait-RunnerObservabilityServiceState -ServiceName $ServiceName -DesiredState "Stopped"
@@ -251,11 +314,11 @@ function Remove-RunnerObservabilityService {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    $state = Get-RunnerObservabilityServiceState -ServiceName $ServiceName
-    if ($state -eq "Absent") {
+    $state = Get-RunnerObservabilityServiceControlState -ServiceName $ServiceName
+    if ($state -eq "absent") {
         return $state
     }
-    if ($state -ne "Stopped") {
+    if ($state -ne "stopped") {
         Stop-RunnerObservabilityService -ServiceName $ServiceName | Out-Null
     }
     Invoke-RunnerObservabilityNativeCommand -FilePath "sc.exe" -ArgumentList @("delete", $ServiceName) | Out-Null

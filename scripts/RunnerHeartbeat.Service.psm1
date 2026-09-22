@@ -96,13 +96,17 @@ function Set-RunnerHeartbeatDirectoryAcl {
 
 function Get-RunnerHeartbeatServiceRecord {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$ServiceName)
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [ValidateRange(1, 600)][int]$OperationTimeoutSeconds = 5
+    )
 
     try {
         $escapedServiceName = $ServiceName.Replace("'", "''")
         return Get-CimInstance `
             -ClassName Win32_Service `
             -Filter ("Name = '{0}'" -f $escapedServiceName) `
+            -OperationTimeoutSec $OperationTimeoutSeconds `
             -ErrorAction Stop
     }
     catch {
@@ -110,26 +114,52 @@ function Get-RunnerHeartbeatServiceRecord {
     }
 }
 
+function Convert-RunnerHeartbeatServiceRecordToControlState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $false)][object]$Service)
+
+    if ($null -eq $Service) {
+        return "absent"
+    }
+    switch (([string]$Service.State).Trim().ToLowerInvariant()) {
+        "running" { return "running" }
+        "stopped" { return "stopped" }
+        "start pending" { return "start_pending" }
+        "stop pending" { return "stop_pending" }
+        default { return "unknown" }
+    }
+}
+
+function Get-RunnerHeartbeatServiceControlState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [ValidateRange(1, 600)][int]$OperationTimeoutSeconds = 5
+    )
+
+    $service = Get-RunnerHeartbeatServiceRecord `
+        -ServiceName $ServiceName `
+        -OperationTimeoutSeconds $OperationTimeoutSeconds
+    return Convert-RunnerHeartbeatServiceRecordToControlState -Service $service
+}
+
 function Get-RunnerHeartbeatServiceState {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    $service = Get-RunnerHeartbeatServiceRecord -ServiceName $ServiceName
-    if ($null -eq $service) {
-        return "Absent"
+    switch (Get-RunnerHeartbeatServiceControlState -ServiceName $ServiceName) {
+        "running" { return "running" }
+        "stopped" { return "stopped" }
+        "absent" { return "absent" }
+        default { return "unknown" }
     }
-    $state = [string]$service.State
-    if ([string]::IsNullOrWhiteSpace($state)) {
-        return "Unknown"
-    }
-    return $state
 }
 
 function Assert-RunnerHeartbeatServiceAbsent {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    if ((Get-RunnerHeartbeatServiceState -ServiceName $ServiceName) -ne "Absent") {
+    if ((Get-RunnerHeartbeatServiceState -ServiceName $ServiceName) -ne "absent") {
         throw [System.InvalidOperationException]::new("service_already_exists")
     }
 }
@@ -144,15 +174,36 @@ function Wait-RunnerHeartbeatServiceState {
     )
 
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $deadline = $TimeoutSeconds
+    $desiredState = $DesiredState.ToLowerInvariant()
     while ($true) {
-        $state = Get-RunnerHeartbeatServiceState -ServiceName $ServiceName
-        if ($state -eq $DesiredState) {
-            return $state
-        }
-        if ($stopwatch.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+        if ($stopwatch.Elapsed.TotalSeconds -ge $deadline) {
             break
         }
-        Start-Sleep -Milliseconds $PollMilliseconds
+        $remainingSeconds = $deadline - $stopwatch.Elapsed.TotalSeconds
+        $readTimeoutSeconds = [Math]::Max(1, [Math]::Min(5, [int][Math]::Ceiling($remainingSeconds)))
+        try {
+            $state = Get-RunnerHeartbeatServiceControlState `
+                -ServiceName $ServiceName `
+                -OperationTimeoutSeconds $readTimeoutSeconds
+        }
+        catch {
+            if ($stopwatch.Elapsed.TotalSeconds -ge $deadline) {
+                break
+            }
+            throw
+        }
+        if ($stopwatch.Elapsed.TotalSeconds -ge $deadline) {
+            break
+        }
+        if ($state -eq $desiredState) {
+            return $state
+        }
+        $remainingMilliseconds = [int][Math]::Floor(($deadline - $stopwatch.Elapsed.TotalSeconds) * 1000)
+        if ($remainingMilliseconds -le 0) {
+            break
+        }
+        Start-Sleep -Milliseconds ([Math]::Min($PollMilliseconds, $remainingMilliseconds))
     }
     throw [System.InvalidOperationException]::new("service_state_timeout")
 }
@@ -186,9 +237,15 @@ function Start-RunnerHeartbeatService {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    $state = Get-RunnerHeartbeatServiceState -ServiceName $ServiceName
-    if ($state -eq "Running") {
+    $state = Get-RunnerHeartbeatServiceControlState -ServiceName $ServiceName
+    if ($state -eq "running") {
         return $state
+    }
+    if ($state -eq "start_pending") {
+        return Wait-RunnerHeartbeatServiceState -ServiceName $ServiceName -DesiredState "Running"
+    }
+    if ($state -eq "stop_pending") {
+        Wait-RunnerHeartbeatServiceState -ServiceName $ServiceName -DesiredState "Stopped" | Out-Null
     }
     Invoke-RunnerHeartbeatNativeCommand -FilePath "sc.exe" -ArgumentList @("start", $ServiceName) | Out-Null
     return Wait-RunnerHeartbeatServiceState -ServiceName $ServiceName -DesiredState "Running"
@@ -198,9 +255,15 @@ function Stop-RunnerHeartbeatService {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    $state = Get-RunnerHeartbeatServiceState -ServiceName $ServiceName
-    if (($state -eq "Stopped") -or ($state -eq "Absent")) {
+    $state = Get-RunnerHeartbeatServiceControlState -ServiceName $ServiceName
+    if (($state -eq "stopped") -or ($state -eq "absent")) {
         return $state
+    }
+    if ($state -eq "start_pending") {
+        Wait-RunnerHeartbeatServiceState -ServiceName $ServiceName -DesiredState "Running" | Out-Null
+    }
+    if ($state -eq "stop_pending") {
+        return Wait-RunnerHeartbeatServiceState -ServiceName $ServiceName -DesiredState "Stopped"
     }
     Invoke-RunnerHeartbeatNativeCommand -FilePath "sc.exe" -ArgumentList @("stop", $ServiceName) | Out-Null
     return Wait-RunnerHeartbeatServiceState -ServiceName $ServiceName -DesiredState "Stopped"
@@ -210,11 +273,11 @@ function Remove-RunnerHeartbeatService {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$ServiceName)
 
-    $state = Get-RunnerHeartbeatServiceState -ServiceName $ServiceName
-    if ($state -eq "Absent") {
+    $state = Get-RunnerHeartbeatServiceControlState -ServiceName $ServiceName
+    if ($state -eq "absent") {
         return $state
     }
-    if ($state -ne "Stopped") {
+    if ($state -ne "stopped") {
         Stop-RunnerHeartbeatService -ServiceName $ServiceName | Out-Null
     }
     Invoke-RunnerHeartbeatNativeCommand -FilePath "sc.exe" -ArgumentList @("delete", $ServiceName) | Out-Null

@@ -13,6 +13,27 @@ ROOT = Path(__file__).parents[1]
 SERVICE_MODULE = ROOT / "scripts" / "RunnerObservability.Service.psm1"
 SERVICE_SCRIPT = ROOT / "scripts" / "Install-RunnerObservabilityService.ps1"
 SERVICE_RUNTIME = ROOT / "src" / "runner_observability" / "service.py"
+POWERSHELL = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+
+
+def run_powershell(script: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(POWERSHELL),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "$ErrorActionPreference = 'Stop'\n" + script,
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
 
 
 class ServiceScriptContractTests(unittest.TestCase):
@@ -88,8 +109,8 @@ class ServiceScriptContractTests(unittest.TestCase):
         ):
             with self.subTest(term=term):
                 self.assertIn(term, self.module_text)
-        self.assertIn('if ($state -eq "Running")', self.module_text)
-        self.assertIn('$state -eq "Stopped"', self.module_text)
+        self.assertIn('if ($state -eq "running")', self.module_text)
+        self.assertIn('$state -eq "stopped"', self.module_text)
 
     def test_uninstall_stops_before_delete_and_verifies_absence(self) -> None:
         uninstall = self.script_text[self.script_text.index('"Uninstall"') :]
@@ -112,6 +133,56 @@ class ServiceScriptContractTests(unittest.TestCase):
         lifecycle = WindowsScServiceLifecycle("RunnerObservabilityMonitor", runner)
 
         self.assertEqual(lifecycle.status(), "unknown")
+
+    def test_exported_state_contract_is_lowercase_and_hides_pending_states(self) -> None:
+        for state in ('"running"', '"stopped"', '"unknown"', '"absent"'):
+            self.assertIn("return " + state, self.module_text)
+        self.assertIn("start_pending", self.module_text)
+        self.assertIn("stop_pending", self.module_text)
+
+    def test_pending_states_are_polled_before_start_stop_or_delete_commands(self) -> None:
+        start = self.module_text[self.module_text.index("function Start-RunnerObservabilityService") :]
+        stop = self.module_text[self.module_text.index("function Stop-RunnerObservabilityService") :]
+        remove = self.module_text[self.module_text.index("function Remove-RunnerObservabilityService") :]
+        self.assertLess(start.index('"start_pending"'), start.index('"start"'))
+        self.assertLess(start.index('"stop_pending"'), start.index('"start"'))
+        self.assertLess(stop.index('"start_pending"'), stop.index('"stop"'))
+        self.assertLess(stop.index('"stop_pending"'), stop.index('"stop"'))
+        self.assertIn("Stop-RunnerObservabilityService", remove)
+        self.assertLess(remove.index("Stop-RunnerObservabilityService"), remove.index('"delete"'))
+
+    def test_delayed_cim_read_cannot_satisfy_wait_after_deadline(self) -> None:
+        self.skipTestUnlessPowerShell()
+        script = f"""
+$module = Import-Module '{SERVICE_MODULE}' -Force -PassThru
+& $module {{
+    function Get-RunnerObservabilityServiceRecord {{
+        Start-Sleep -Milliseconds 1200
+        return [pscustomobject]@{{ State = 'Running' }}
+    }}
+    try {{
+        Wait-RunnerObservabilityServiceState -ServiceName 'DelayedRead' -DesiredState Running -TimeoutSeconds 1 -PollMilliseconds 25
+        exit 2
+    }} catch {{
+        if ($_.Exception.Message -ne 'service_state_timeout') {{ exit 3 }}
+    }}
+}}
+exit 0
+"""
+        completed = run_powershell(script)
+        self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
+    def test_installer_reason_mapping_writes_direct_stderr_under_stop_preference(self) -> None:
+        self.assertIn("[System.Console]::Error.WriteLine", self.script_text)
+        self.assertNotIn("Write-Error", self.script_text)
+        self.assertIn("exit 2", self.script_text)
+        for reason in ("service_already_exists", "service_state_timeout"):
+            self.assertIn(reason, self.script_text)
+
+    @staticmethod
+    def skipTestUnlessPowerShell() -> None:
+        if not POWERSHELL.is_file():
+            raise unittest.SkipTest("Windows PowerShell required")
 
 
 if __name__ == "__main__":
