@@ -75,9 +75,21 @@ class ValidationTests(unittest.TestCase):
         )
 
     def test_safe_reason_returns_bounded_reason_code(self):
-        self.assertEqual(safe_reason(OnboardingValidationError("bad\nreason")), "bad_reason")
-        self.assertEqual(safe_reason("invalid monitor ip"), "invalid_monitor_ip")
+        self.assertEqual(safe_reason(OnboardingValidationError("invalid_monitor_ip")), "invalid_monitor_ip")
+        self.assertEqual(safe_reason("invalid_monitor_ip"), "invalid_monitor_ip")
         self.assertLessEqual(len(safe_reason("x" * 500)), 96)
+
+    def test_safe_reason_collapses_untrusted_strings_to_unknown(self):
+        for value in (
+            r"C:\runner-observability-secrets\monitor-token.txt",
+            "Bearer super-secret-token",
+            "raw exception: connection failed at C:/private/source.py:42",
+        ):
+            with self.subTest(value=value):
+                reason = safe_reason(value)
+                self.assertEqual(reason, "unknown_error")
+                self.assertNotIn("token", reason)
+                self.assertNotIn("runner-observability", reason)
 
 
 class HostsMappingTests(unittest.TestCase):
@@ -93,6 +105,18 @@ class HostsMappingTests(unittest.TestCase):
 
     def test_matching_hostname_mapping_is_idempotent(self):
         contents = "192.168.24.10 monitor-test.local\n"
+
+        update = upsert_hosts_mapping(
+            contents,
+            hostname="monitor-test.local",
+            monitor_ip="192.168.24.10",
+        )
+
+        self.assertFalse(update.changed)
+        self.assertEqual(update.contents, contents)
+
+    def test_matching_hostname_mapping_is_case_insensitive(self):
+        contents = "192.168.24.10 MONITOR-TEST.LOCAL\n"
 
         update = upsert_hosts_mapping(
             contents,

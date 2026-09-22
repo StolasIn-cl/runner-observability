@@ -10,8 +10,29 @@ from typing import Final
 
 
 _REVISION_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_REASON_PATTERN: Final = re.compile(r"[^a-z0-9_]+")
 _SUPPORTED_CERTIFICATE_MODES: Final = {"public-ca", "private-ca", "self-signed", "existing"}
+_SAFE_REASON_CODES: Final = frozenset(
+    {
+        "already_present",
+        "added",
+        "certificate_key_pair_missing",
+        "conflicting_hosts_mapping",
+        "duplicate_hosts_mapping",
+        "install_root_not_directory",
+        "install_root_unreadable",
+        "invalid_certificate_mode",
+        "invalid_hosts_input",
+        "invalid_hostname",
+        "invalid_monitor_ip",
+        "invalid_release_pointer",
+        "non_empty_without_release_pointer",
+        "release_pointer_not_file",
+        "replaced",
+        "self_signed_not_allowed",
+        "unknown_error",
+        "unsupported_certificate_mode",
+    }
+)
 
 
 class OnboardingValidationError(ValueError):
@@ -37,13 +58,10 @@ class HostsUpdate:
 
 
 def safe_reason(value: object) -> str:
-    """Return a bounded reason code without exposing paths or raw errors."""
+    """Return one known reason code, collapsing all untrusted values."""
 
     candidate = getattr(value, "reason", value)
-    if not isinstance(candidate, str):
-        candidate = type(candidate).__name__
-    reason = _REASON_PATTERN.sub("_", candidate.lower()).strip("_")[:96]
-    return reason or "unknown_error"
+    return candidate if isinstance(candidate, str) and candidate in _SAFE_REASON_CODES else "unknown_error"
 
 
 def inspect_install_root(root: Path | str) -> InstallRootInspection:
@@ -126,13 +144,15 @@ def upsert_hosts_mapping(
     if any(character.isspace() for character in hostname) or "#" in hostname:
         raise OnboardingValidationError("invalid_hostname")
     monitor_ip = validate_monitor_ip(monitor_ip)
+    normalized_hostname = hostname.casefold()
 
     lines = contents.splitlines(keepends=True)
     matching_indexes: list[int] = []
     addresses: list[str] = []
     for index, line in enumerate(lines):
         tokens = line.split("#", 1)[0].split()
-        if hostname in tokens and tokens.index(hostname) > 0:
+        matching_tokens = [token for token in tokens if token.casefold() == normalized_hostname]
+        if matching_tokens and tokens.index(matching_tokens[0]) > 0:
             matching_indexes.append(index)
             addresses.append(tokens[0])
 
