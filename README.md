@@ -271,7 +271,7 @@ Promeo expects this exact release layout:
 ```text
 C:\runner-observability-agent\
   current-release.txt
-  runner-id.txt                 # created on first CI telemetry event
+  runner-id.txt                 # initialized once; stable for this Runner
   releases\<revision>\
     src\runner_observability\
 ```
@@ -341,6 +341,68 @@ new Runner does not need to install the Python package globally; the helper
 sets `PYTHONPATH` to the active release's `src` directory for each bounded
 agent invocation.
 
+### Step 2A -- grant CI read access and persist the Runner identity
+
+The heartbeat service and CI jobs use different Windows security contexts:
+
+* `RunnerObservabilityHeartbeat` normally runs as `NT AUTHORITY\LocalService`.
+* Promeo's CI telemetry runs as the account that launches `Runner.Listener.exe`
+  and `Runner.Worker.exe`.
+
+Grant the confirmed CI Runner account read/execute access to the managed agent
+root and read access to the token file as described above. In addition, the CI
+account must be able to persist the per-machine identity in
+`C:\runner-observability-agent\runner-id.txt`. Without this write access,
+`Telemetry-Helpers.ps1` refuses to send the affected event instead of using
+an in-memory UUID. This prevents separate CI steps from appearing in the
+dashboard as separate Runners; fix the ACL before treating telemetry as
+operational.
+
+Run the following once in an elevated PowerShell after replacing the account
+with the account confirmed by `Runner.Listener.exe` ownership:
+
+```powershell
+$runnerAccount = 'MACHINE\confirmed-runner-account'
+$installRoot = 'C:\runner-observability-agent'
+$runnerIdPath = Join-Path $installRoot 'runner-id.txt'
+
+if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
+    throw 'The inventory-confirmed install root does not exist'
+}
+
+if (-not (Test-Path -LiteralPath $runnerIdPath -PathType Leaf)) {
+    $runnerId = ([guid]::NewGuid()).Guid
+    Set-Content -LiteralPath $runnerIdPath -Value $runnerId -Encoding ASCII -NoNewline
+} else {
+    $runnerId = (Get-Content -LiteralPath $runnerIdPath -Raw -ErrorAction Stop).Trim()
+}
+
+$parsedRunnerId = [guid]::Empty
+if (-not [guid]::TryParse($runnerId, [ref]$parsedRunnerId)) {
+    throw 'runner-id.txt does not contain a valid UUID; inspect it before changing it'
+}
+
+# Read/execute the active release and its parent directories.
+icacls.exe $installRoot /grant ("{0}:(RX)" -f $runnerAccount) /C
+if ($LASTEXITCODE -ne 0) { throw 'Failed to grant agent-root read/execute access' }
+icacls.exe $installRoot /grant ("{0}:(OI)(CI)(RX)" -f $runnerAccount) /T /C
+if ($LASTEXITCODE -ne 0) { throw 'Failed to grant release read/execute access' }
+
+# Only the stable identity file needs write access; do not grant Modify to the
+# whole agent root or to the release source.
+icacls.exe $runnerIdPath /grant ("{0}:(M)" -f $runnerAccount) /C
+if ($LASTEXITCODE -ne 0) { throw 'Failed to grant runner-id persistence access' }
+
+Write-Output 'runner_id_exists=True'
+Write-Output 'runner_id_valid=True'
+```
+
+Do not delete or regenerate an existing `runner-id.txt` during ordinary
+updates. If a machine image is cloned, generate one new UUID for each physical
+Runner before its first CI job. As an alternative, a stable per-machine
+`RUNNER_OBSERVABILITY_RUNNER_ID` machine environment variable may be used, but
+never generate that value per job or per PowerShell process.
+
 ### Step 3 -- configure machine environment variables
 
 Set these values only after Step 0 confirmed the paths and the Monitor Host
@@ -364,11 +426,12 @@ foreach ($name in @(
 }
 ```
 
-Do not set `RUNNER_OBSERVABILITY_RUNNER_ID` during a normal new install. The
-helper creates a UUID in `runner-id.txt` under the local install root on the
-first event and reuses it across jobs. If the install root came from a cloned
-machine image and already contains another machine's `runner-id.txt`, assign a
-new machine-specific UUID through the optional environment variable instead:
+Do not set `RUNNER_OBSERVABILITY_RUNNER_ID` during a normal new install when
+`runner-id.txt` has been initialized and is writable by the CI Runner account.
+The helper then reuses that UUID across jobs. If the install root came from a
+cloned machine image and already contains another machine's `runner-id.txt`,
+assign a new machine-specific UUID through the optional environment variable
+instead:
 
 ```powershell
 [Environment]::SetEnvironmentVariable(
@@ -406,6 +469,11 @@ Write-Output "active_revision=$revision"
 Write-Output "runner_id_exists=$(Test-Path -LiteralPath (Join-Path $installRoot 'runner-id.txt') -PathType Leaf)"
 Write-Output "token_exists=$(Test-Path -LiteralPath 'C:\runner-observability-secrets\monitor-token.txt' -PathType Leaf)"
 ```
+
+`runner_id_exists=True` is required for a stable dashboard identity. If it is
+`False`, or if separate jobs produce different IDs, stop and fix the
+`runner-id.txt` ACL before treating the dashboard as showing multiple physical
+Runners.
 
 Then confirm in the dashboard that:
 
