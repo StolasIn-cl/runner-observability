@@ -53,7 +53,19 @@ function Get-RunnerObservabilityInstallInspection {
         catch {
             throw (New-RunnerObservabilityStableError -Reason "release_pointer_read_failed")
         }
-        if ([string]::IsNullOrWhiteSpace($revision)) {
+        $validRevision = (
+            (-not [string]::IsNullOrWhiteSpace($revision)) -and
+            ($revision.Length -le 128) -and
+            ($revision -match '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+        )
+        if ($validRevision) {
+            $releaseSource = Join-Path (Join-Path (Join-Path $Path "releases") $revision) "src"
+            $releaseSourceExists = Test-Path -LiteralPath $releaseSource -PathType Container
+        }
+        else {
+            $releaseSourceExists = $false
+        }
+        if (-not $releaseSourceExists) {
             return [pscustomobject]@{
                 Path = $Path
                 ReleaseState = "inspect-before-use"
@@ -62,12 +74,11 @@ function Get-RunnerObservabilityInstallInspection {
                 RunnerIdExists = (Test-Path -LiteralPath (Join-Path $Path "runner-id.txt") -PathType Leaf)
             }
         }
-        $releaseSource = Join-Path (Join-Path (Join-Path $Path "releases") $revision) "src"
         return [pscustomobject]@{
             Path = $Path
             ReleaseState = "existing"
             Revision = $revision
-            ReleaseSourceExists = (Test-Path -LiteralPath $releaseSource -PathType Container)
+            ReleaseSourceExists = $true
             RunnerIdExists = (Test-Path -LiteralPath (Join-Path $Path "runner-id.txt") -PathType Leaf)
         }
     }
@@ -105,7 +116,7 @@ function Get-RunnerObservabilityInventory {
         [string[]]$CandidateRunnerRoots = @("C:\actions-runner"),
         [string[]]$CandidateInstallRoots = @("C:\runner-observability-agent"),
         [string[]]$CandidateSecretRoots = @("C:\runner-observability-secrets"),
-        [string[]]$ServiceNamePatterns = @("*RunnerObservability*")
+        [string[]]$ServiceNamePatterns = @("*action*", "*runner*", "*observability*", "*promeo*")
     )
 
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
@@ -320,7 +331,10 @@ function Set-RunnerObservabilityRuntimeAcl {
     $serviceGrant = "{0}:(OI)(CI)(RX)" -f $ServiceAccount
     Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_acl_failed" -ArgumentList @(
         $Path,
+        "/inheritance:r",
         "/grant:r",
+        "SYSTEM:(OI)(CI)(F)",
+        "Administrators:(OI)(CI)(F)",
         $serviceGrant,
         "/t",
         "/c"
@@ -364,30 +378,33 @@ function New-RunnerObservabilityTokenFile {
     if ([string]::IsNullOrWhiteSpace($parent)) {
         $parent = (Get-Location).Path
     }
+    $temporaryPath = $null
+    $phase = "prepare"
     try {
         New-Item -ItemType Directory -Path $parent -Force -ErrorAction Stop | Out-Null
         $temporaryPath = Join-Path $parent ("." + (Split-Path -Leaf $Path) + "." + [guid]::NewGuid().ToString("N") + ".tmp")
+        [IO.File]::WriteAllBytes($temporaryPath, [byte[]]@())
+        $phase = "acl"
+        Set-RunnerObservabilityFileAcl -Path $temporaryPath -ServiceAccount $ServiceAccount
+        $phase = "write"
         [IO.File]::WriteAllText($temporaryPath, $tokenValue, [Text.UTF8Encoding]::new($false))
+        $phase = "activate"
+        [IO.File]::Move($temporaryPath, $Path)
     }
     catch {
+        if ($_.Exception.Message -eq "file_acl_failed") {
+            throw
+        }
+        if ($phase -eq "activate") {
+            throw (New-RunnerObservabilityStableError -Reason "token_file_activate_failed")
+        }
         throw (New-RunnerObservabilityStableError -Reason "token_file_write_failed")
     }
     finally {
         $tokenValue = $null
-    }
-
-    try {
-        Set-RunnerObservabilityFileAcl -Path $temporaryPath -ServiceAccount $ServiceAccount
-        [IO.File]::Move($temporaryPath, $Path)
-    }
-    catch {
-        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+        if (($null -ne $temporaryPath) -and (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
             Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
         }
-        if ($_.Exception.Message -eq "file_acl_failed") {
-            throw
-        }
-        throw (New-RunnerObservabilityStableError -Reason "token_file_activate_failed")
     }
 
     return [pscustomobject]@{ Path = $Path; Created = $true }
@@ -448,12 +465,25 @@ function Set-RunnerObservabilityHostsMapping {
     }
     $lines = @($contents -split "`r?`n")
     if (($lines.Count -gt 0) -and ($lines[$lines.Count - 1] -eq "")) {
-        $lines = @($lines[0..($lines.Count - 2)])
+        if ($lines.Count -eq 1) {
+            $lines = @()
+        }
+        else {
+            $lines = @($lines[0..($lines.Count - 2)])
+        }
     }
 
-    $matchingIndexes = @()
+    $matchingEntries = @()
     for ($index = 0; $index -lt $lines.Count; $index += 1) {
-        $body = ($lines[$index] -split "#", 2)[0].Trim()
+        $commentIndex = $lines[$index].IndexOf("#")
+        if ($commentIndex -ge 0) {
+            $body = $lines[$index].Substring(0, $commentIndex).Trim()
+            $comment = $lines[$index].Substring($commentIndex)
+        }
+        else {
+            $body = $lines[$index].Trim()
+            $comment = ""
+        }
         if ([string]::IsNullOrWhiteSpace($body)) {
             continue
         }
@@ -463,21 +493,25 @@ function Set-RunnerObservabilityHostsMapping {
         }
         foreach ($alias in $parts[1..($parts.Count - 1)]) {
             if ($alias -ieq $Hostname) {
-                $matchingIndexes += $index
+                $matchingEntries += [pscustomobject]@{
+                    Index = $index
+                    IpAddress = $parts[0]
+                    Aliases = @($parts[1..($parts.Count - 1)])
+                    Comment = $comment
+                }
                 break
             }
         }
     }
 
-    if ($matchingIndexes.Count -gt 0) {
+    if ($matchingEntries.Count -gt 0) {
         $allMatch = $true
-        foreach ($index in $matchingIndexes) {
-            $mappedIp = (($lines[$index] -split "#", 2)[0].Trim() -split "\s+")[0]
-            if ($mappedIp -ne $MonitorIp) {
+        foreach ($entry in $matchingEntries) {
+            if ($entry.IpAddress -ne $MonitorIp) {
                 $allMatch = $false
             }
         }
-        if ($allMatch -and ($matchingIndexes.Count -eq 1)) {
+        if ($allMatch -and ($matchingEntries.Count -eq 1)) {
             return [pscustomobject]@{ Changed = $false; Path = $HostsPath }
         }
         if (-not $ReplaceConflicting) {
@@ -485,8 +519,21 @@ function Set-RunnerObservabilityHostsMapping {
         }
         $kept = @()
         for ($index = 0; $index -lt $lines.Count; $index += 1) {
-            if ($matchingIndexes -notcontains $index) {
+            $entry = @($matchingEntries | Where-Object { $_.Index -eq $index })
+            if ($entry.Count -eq 0) {
                 $kept += $lines[$index]
+                continue
+            }
+            $remainingAliases = @($entry[0].Aliases | Where-Object { $_ -ine $Hostname })
+            if ($remainingAliases.Count -gt 0) {
+                $preservedLine = $entry[0].IpAddress + "`t" + ($remainingAliases -join "`t")
+                if (-not [string]::IsNullOrWhiteSpace($entry[0].Comment)) {
+                    $preservedLine += " " + $entry[0].Comment
+                }
+                $kept += $preservedLine
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($entry[0].Comment)) {
+                $kept += $entry[0].Comment
             }
         }
         $lines = $kept
@@ -498,7 +545,7 @@ function Set-RunnerObservabilityHostsMapping {
     $temporaryPath = Join-Path $parent (".hosts." + [guid]::NewGuid().ToString("N") + ".tmp")
     $backupPath = Join-Path $parent (".hosts." + [guid]::NewGuid().ToString("N") + ".bak")
     try {
-        [IO.File]::WriteAllText($temporaryPath, $updated, [Text.Encoding]::ASCII)
+        [IO.File]::WriteAllText($temporaryPath, $updated, [Text.UTF8Encoding]::new($false))
         [IO.File]::Replace($temporaryPath, $HostsPath, $backupPath)
     }
     catch {
