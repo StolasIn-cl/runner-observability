@@ -631,11 +631,17 @@ class RunnerRoleScriptStaticContractTests(unittest.TestCase):
         self.assertIn("Get-RunnerObservabilityInventory", self.script_text)
         self.assertIn("Assert-RunnerObservabilityInventoryGate", self.script_text)
         self.assertIn("Register-RunnerHeartbeatService", self.script_text)
+        self.assertIn("Get-RunnerReleaseSource", self.script_text)
+        self.assertIn("-ModulePath $releaseSource", self.script_text)
         self.assertIn("Write-RunnerHeartbeatConfigAtomic", self.script_text)
         self.assertNotRegex(self.script_text, r"(?im)^\s*\[string\]\$Token\b")
         self.assertNotRegex(self.script_text, r"(?i)--token\s+\$|--token\s+\S+")
         self.assertNotIn("monitor.key", self.lowered.replace('"monitor.key"', ""))
         self.assertIn("monitor_key_not_allowed", self.script_text)
+
+    def test_runner_preflight_checks_the_windows_service_runtime(self) -> None:
+        self.assertIn("_load_service_api", self.script_text)
+        self.assertIn("windows_service_runtime_unavailable", self.script_text)
 
     def test_runner_requires_confirmed_monitor_address_and_rejects_key_copy(self) -> None:
         self.assertIn("Test-RunnerObservabilityMonitorIp", self.script_text)

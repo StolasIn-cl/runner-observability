@@ -79,7 +79,24 @@ function Assert-RunnerInstallStateForConfigure {
     if ($state -eq "inspect-before-use") {
         throw (New-RunnerRoleError -Reason "install_root_inspect_before_use")
     }
+    if ($state -ne "existing") {
+        throw (New-RunnerRoleError -Reason "runner_installation_missing")
+    }
     return $result
+}
+
+function Get-RunnerReleaseSource {
+    param([Parameter(Mandatory = $true)]$Inspection)
+
+    if ([string]::IsNullOrWhiteSpace([string]$Inspection.Revision)) {
+        throw (New-RunnerRoleError -Reason "runner_installation_missing")
+    }
+    $releaseSource = Join-Path (Join-Path (Join-Path $InstallRoot "releases") $Inspection.Revision) "src"
+    if (-not (Test-Path -LiteralPath $releaseSource -PathType Container) -or
+        -not (Test-Path -LiteralPath (Join-Path $releaseSource "runner_heartbeat_service.py") -PathType Leaf)) {
+        throw (New-RunnerRoleError -Reason "runtime_path_missing")
+    }
+    return $releaseSource
 }
 
 function Assert-RunnerPython {
@@ -255,16 +272,25 @@ function Import-RunnerMonitorCertificate {
 }
 
 function Assert-RunnerPythonImport {
+    param([Parameter(Mandatory = $true)][string]$ModulePath)
+
     $previousPythonPath = $env:PYTHONPATH
     try {
-        $env:PYTHONPATH = Join-Path (Split-Path -Parent $PSScriptRoot) "src"
+        $env:PYTHONPATH = $ModulePath
         & $PythonPath -s -c "import runner_observability, runner_observability.heartbeat_service" 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw (New-RunnerRoleError -Reason "python_import_failed")
         }
+        & $PythonPath -s -c "from runner_observability.service import _load_service_api; raise SystemExit(0 if _load_service_api() is not None else 1)" 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw (New-RunnerRoleError -Reason "windows_service_runtime_unavailable")
+        }
     }
     catch {
         if ($_.Exception.Message -eq "python_import_failed") {
+            throw
+        }
+        if ($_.Exception.Message -eq "windows_service_runtime_unavailable") {
             throw
         }
         throw (New-RunnerRoleError -Reason "python_import_failed")
@@ -281,11 +307,12 @@ function Assert-RunnerPythonImport {
 
 function Invoke-RunnerPreflight {
     $result = Get-RunnerInstallInspection
+    $releaseSource = Get-RunnerReleaseSource -Inspection $result.Inspection
     Assert-RunnerPython
     Assert-RunnerEndpoint
     Assert-RunnerMonitorAddress
     Assert-RunnerCertificate
-    Assert-RunnerPythonImport
+    Assert-RunnerPythonImport -ModulePath $releaseSource
     if ((Test-Path -LiteralPath $TokenPath -PathType Leaf) -and ((Split-Path -Leaf $TokenPath) -ieq "monitor.key")) {
         throw (New-RunnerRoleError -Reason "monitor_key_not_allowed")
     }
@@ -295,6 +322,7 @@ function Invoke-RunnerPreflight {
         Endpoint = $Endpoint
         MonitorHost = $MonitorHost
         CertificateTrustModel = $CertificateTrustModel
+        ReleaseSource = $releaseSource
         TokenPresent = (Test-Path -LiteralPath $TokenPath -PathType Leaf)
         Reason = "preflight_passed"
     }
@@ -319,6 +347,7 @@ function New-RunnerHeartbeatConfiguration {
 
 function Invoke-RunnerConfigure {
     $result = Assert-RunnerInstallStateForConfigure
+    $releaseSource = Get-RunnerReleaseSource -Inspection $result.Inspection
     $null = Invoke-RunnerPreflight
     if ((Get-RunnerHeartbeatServiceState -ServiceName $ServiceName) -ne "absent") {
         throw (New-RunnerRoleError -Reason "service_already_exists")
@@ -351,7 +380,7 @@ function Invoke-RunnerConfigure {
         RUNNER_OBSERVABILITY_TOKEN_PATH = $TokenPath
         RUNNER_OBSERVABILITY_RUNNER_ID = $runnerIdValue
     } -AllowMachineEnvironmentChange | Out-Null
-    Register-RunnerHeartbeatService -ServiceName $ServiceName -PythonPath $PythonPath -ConfigPath $configPath -ServiceAccount $ServiceAccount
+    Register-RunnerHeartbeatService -ServiceName $ServiceName -PythonPath $PythonPath -ConfigPath $configPath -ModulePath $releaseSource -ServiceAccount $ServiceAccount
     Write-Output ("runner_id_path={0}" -f $RunnerId)
     Write-Output ("heartbeat_config_path={0}" -f $configPath)
     Write-Output "service_state=stopped"
@@ -429,6 +458,7 @@ catch {
         "certificate_import_failed",
         "python_not_found",
         "python_import_failed",
+        "windows_service_runtime_unavailable",
         "install_root_inspect_before_use",
         "runner_id_invalid",
         "runner_id_mismatch",

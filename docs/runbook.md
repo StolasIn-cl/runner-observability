@@ -361,9 +361,12 @@ network-ready, sends one heartbeat immediately, then schedules the next
 heartbeat every 60 seconds from a monotonic deadline so delivery time does
 not accumulate drift.
 
-Install the optional Windows service dependency on the Runner, then run the
-install action from an elevated PowerShell prompt. The token is read from a
-file; it is never placed in the service command line or heartbeat state file:
+Install the optional Windows service dependency into the inventory-confirmed
+machine Python runtime on the Runner, then run the install action from an
+elevated PowerShell prompt. `ModulePath` must point at the active managed
+release's `src` directory; the service launcher uses that path so a global
+installation of `runner_observability` is not required. The token is read from
+a file; it is never placed in the service command line or heartbeat state file:
 
 ```powershell
 python -m pip install ".[windows-service]"
@@ -371,6 +374,7 @@ python -m pip install ".[windows-service]"
     -Action Install `
     -ConfigPath "C:\runner-observability\heartbeat-config.json" `
     -PythonPath "C:\Python311\python.exe" `
+    -ModulePath "C:\runner-observability-agent\releases\<revision>\src" `
     -Endpoint "https://<monitor-host>:8765" `
     -TokenPath "C:\secure\runner-observability-token.txt" `
     -RunnerId "<runner-uuid>" `

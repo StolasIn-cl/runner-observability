@@ -344,26 +344,138 @@ deployment evidence; finish with one real CI job and dashboard association.
 
 Transfer only `monitor-token.txt` and, for a private-CA/self-signed trust
 model, the public `monitor.crt` to the Runner. Never transfer `monitor.key`.
-Run the Runner entry point after replacing the endpoint and confirmed Monitor
-IPv4 address:
+Because the Monitor regenerated both files, any copies and trust entry from a
+previous Monitor generation are stale; the rebuilt Runner must receive the
+current pair through the approved secure transfer channel.
+The required order is Step 0 inventory, certificate/token and host resolution,
+release staging, identity/CI ACL setup, Runner `Preflight`, Runner `Configure`,
+Heartbeat start, Runner listener restart, and one real CI job. Do not run
+`Preflight` or `Configure` before Step 2 has created a valid active release;
+the entry point rejects that state and the service launcher uses that release's
+`src` directory.
+
+For this acceptance, use the explicit full-clean Runner reset below. First
+stop the verified Runner listener using its actual launch method, then remove
+the named Heartbeat service:
 
 ```powershell
-$python = 'C:\Python311\python.exe'
+$runnerScript = '.\scripts\Install-RunnerObservabilityRunner.ps1'
 $installRoot = 'C:\runner-observability-agent'
-$endpoint = 'https://monitor-test.local:8765'
 $token = 'C:\runner-observability-secrets\monitor-token.txt'
-$monitorIp = '192.0.2.20' # replace with the inventory-confirmed Monitor address
 
-.\scripts\Install-RunnerObservabilityRunner.ps1 `
-    -Action Preflight -PythonPath $python -InstallRoot $installRoot `
-    -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
-    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
-
-.\scripts\Install-RunnerObservabilityRunner.ps1 `
-    -Action Configure -PythonPath $python -InstallRoot $installRoot `
-    -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
-    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
+& $runnerScript -Action Uninstall -InstallRoot $installRoot -TokenPath $token `
+    -ServiceName 'RunnerObservabilityHeartbeat'
+& $runnerScript -Action Status -InstallRoot $installRoot -TokenPath $token `
+    -ServiceName 'RunnerObservabilityHeartbeat'
 ```
+
+`Uninstall` stops and deletes only the verified SCM service. For this full-clean
+test, continue with the reset below; do not treat `Uninstall` alone as a clean
+environment.
+
+### Full-clean Runner reset (destructive; Step 0 is mandatory)
+
+Run this only after the actual Runner Step 0 output confirms the exact machine,
+account, install root, secret root, service name, and current release. Pull the
+updated repository checkout before using the scripts, but do not delete the
+checkout itself. The reset removes only deployment-owned Runner files and
+settings:
+
+```powershell
+$installRoot = 'C:\runner-observability-agent'       # Step 0 confirmed
+$secretRoot = 'C:\runner-observability-secrets'     # Step 0 confirmed
+$serviceName = 'RunnerObservabilityHeartbeat'       # Step 0 confirmed
+$runnerScript = '.\scripts\Install-RunnerObservabilityRunner.ps1'
+
+if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
+    throw 'The confirmed install root is absent; do not broaden the reset scope'
+}
+if (Test-Path -LiteralPath (Join-Path $secretRoot 'monitor.key') -PathType Leaf) {
+    throw 'Unexpected monitor.key on a Runner; stop and investigate before reset'
+}
+
+& $runnerScript -Action Uninstall -InstallRoot $installRoot `
+    -TokenPath (Join-Path $secretRoot 'monitor-token.txt') `
+    -ServiceName $serviceName
+& $runnerScript -Action Status -InstallRoot $installRoot `
+    -TokenPath (Join-Path $secretRoot 'monitor-token.txt') `
+    -ServiceName $serviceName
+```
+
+Before deleting the remaining files, inspect the exact owned paths and the
+`monitor-test.local` hosts entry. If the hosts entry or a certificate trust
+entry is shared with another purpose, stop and keep it. Remove a hosts entry
+only when the inventory proves this deployment created it; remove a trusted
+certificate only by its independently confirmed SHA-256 fingerprint.
+
+If the old public certificate was imported into `Cert:\LocalMachine\Root`,
+identify its thumbprint before deleting the old certificate file. The
+fingerprint is public metadata; never print the token or private key:
+
+```powershell
+$python = 'C:\Python311\python.exe' # inventory-confirmed Python
+$oldCert = Join-Path $secretRoot 'monitor.crt'
+if (Test-Path -LiteralPath $oldCert -PathType Leaf) {
+    $oldThumbprint = (& $python -c "import base64,hashlib,ssl,pathlib; der=base64.b64decode(ssl.PEM_cert_to_DER_cert(pathlib.Path(r'$oldCert').read_text())); print(hashlib.sha1(der).hexdigest().upper())").Trim()
+    Get-ChildItem -Path 'Cert:\LocalMachine\Root' |
+        Where-Object { $_.Thumbprint -eq $oldThumbprint } |
+        Select-Object Subject, Thumbprint, NotAfter
+    $removeTrust = Read-Host 'Type REMOVE-OLD-MONITOR-CERT only if this exact entry belongs to the old Monitor cert'
+    if ($removeTrust -ceq 'REMOVE-OLD-MONITOR-CERT') {
+        Get-ChildItem -Path 'Cert:\LocalMachine\Root' |
+            Where-Object { $_.Thumbprint -eq $oldThumbprint } |
+            Remove-Item -Force
+    }
+}
+```
+
+Also remove the old `monitor-test.local` hosts mapping only after reviewing
+the matching line and confirming it was created for this deployment. Leave a
+conflicting or shared mapping in place and resolve it with the Monitor Host
+operator; Step 1A will add or validate the mapping for the new certificate.
+
+After that review, use an explicit confirmation and remove only the exact
+deployment paths. This does not remove `C:\actions-runner`, the Runner
+registration, the source checkout, unrelated secrets, or a global Python
+installation:
+
+```powershell
+$ownedFiles = @(
+    (Join-Path $installRoot 'current-release.txt'),
+    (Join-Path $installRoot 'runner-id.txt'),
+    (Join-Path $installRoot 'heartbeat-config.json'),
+    (Join-Path $installRoot 'state\heartbeat.json'),
+    (Join-Path $secretRoot 'monitor-token.txt'),
+    (Join-Path $secretRoot 'monitor.crt')
+)
+$confirmation = Read-Host 'Type RESET-RUNNER to remove the listed deployment files and install root'
+if ($confirmation -cne 'RESET-RUNNER') {
+    throw 'Runner reset cancelled'
+}
+
+Remove-Item -LiteralPath $installRoot -Recurse -Force
+foreach ($path in @($ownedFiles | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })) {
+    Remove-Item -LiteralPath $path -Force
+}
+
+foreach ($name in @(
+    'RUNNER_OBSERVABILITY_INSTALL_ROOT',
+    'RUNNER_OBSERVABILITY_ENDPOINT',
+    'RUNNER_OBSERVABILITY_TOKEN_PATH',
+    'RUNNER_OBSERVABILITY_RUNNER_ID'
+)) {
+    [Environment]::SetEnvironmentVariable($name, $null, 'Machine')
+}
+```
+
+The `Remove-Item $installRoot` operation is intentionally limited to the
+inventory-confirmed managed root. The later per-file loop cleans the token and
+public certificate without deleting other files in a shared secret directory;
+if the secret directory contains unrelated files, leave the directory itself
+in place. Verify the service is absent, the exact deployment files are absent,
+the old trust entry is gone when it was deployment-owned, and the four machine
+variables are empty before beginning Step 1 again. Step 1 must then copy the
+new Monitor token and public certificate; do not reuse the old pair.
 
 For `PrivateCa` or `SelfSigned`, pass only the public certificate and the
 operator-confirmed SHA-256 fingerprint; `-ImportCertificate` verifies that
@@ -575,6 +687,9 @@ $releaseRoot = Join-Path $installRoot (Join-Path 'releases' $revision)
 if (-not (Test-Path -LiteralPath (Join-Path $sourceSrc 'runner_observability') -PathType Container)) {
     throw 'Source checkout does not contain src\runner_observability'
 }
+if (-not (Test-Path -LiteralPath (Join-Path $sourceSrc 'runner_heartbeat_service.py') -PathType Leaf)) {
+    throw 'Source checkout does not contain the Runner heartbeat launcher'
+}
 if (Test-Path -LiteralPath $releaseRoot) {
     throw 'The requested revision is already staged; inspect it before continuing'
 }
@@ -665,43 +780,48 @@ Runner before its first CI job. As an alternative, a stable per-machine
 `RUNNER_OBSERVABILITY_RUNNER_ID` machine environment variable may be used, but
 never generate that value per job or per PowerShell process.
 
-### Step 3 -- configure machine environment variables
+### Step 3 -- preflight, configure, and register the Heartbeat service
 
-Set these values only after Step 0 confirmed the paths and the Monitor Host
-operator supplied the real endpoint. The endpoint must include `/v1/events`.
+The endpoint must contain the real Monitor host and use `/v1/events` when it
+is passed to this entry point. `Preflight` is read-only. `Configure` then
+atomically writes the Heartbeat config, applies the service/token/state ACLs,
+persists the machine environment values, and registers the service stopped;
+it does not start the service.
 
 ```powershell
+$python = 'C:\Python311\python.exe' # inventory-confirmed Python
 $installRoot = 'C:\runner-observability-agent'
-$endpoint = 'https://monitor.example.internal:8765/v1/events'
-$tokenPath = 'C:\runner-observability-secrets\monitor-token.txt'
+$endpoint = 'https://monitor-test.local:8765/v1/events'
+$token = 'C:\runner-observability-secrets\monitor-token.txt'
+$monitorIp = '192.0.2.20' # inventory-confirmed Monitor IPv4 address
 
-[Environment]::SetEnvironmentVariable('RUNNER_OBSERVABILITY_INSTALL_ROOT', $installRoot, 'Machine')
-[Environment]::SetEnvironmentVariable('RUNNER_OBSERVABILITY_ENDPOINT', $endpoint, 'Machine')
-[Environment]::SetEnvironmentVariable('RUNNER_OBSERVABILITY_TOKEN_PATH', $tokenPath, 'Machine')
+& .\scripts\Install-RunnerObservabilityRunner.ps1 `
+    -Action Preflight -PythonPath $python -InstallRoot $installRoot `
+    -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
+    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
 
-foreach ($name in @(
-    'RUNNER_OBSERVABILITY_INSTALL_ROOT',
-    'RUNNER_OBSERVABILITY_ENDPOINT',
-    'RUNNER_OBSERVABILITY_TOKEN_PATH'
-)) {
-    Write-Output "Machine.$name=$([Environment]::GetEnvironmentVariable($name, 'Machine'))"
-}
+& .\scripts\Install-RunnerObservabilityRunner.ps1 `
+    -Action Configure -PythonPath $python -InstallRoot $installRoot `
+    -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
+    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
 ```
 
-Do not set `RUNNER_OBSERVABILITY_RUNNER_ID` during a normal new install when
-`runner-id.txt` has been initialized and is writable by the CI Runner account.
-The helper then reuses that UUID across jobs. If the install root came from a
-cloned machine image and already contains another machine's `runner-id.txt`,
-assign a new machine-specific UUID through the optional environment variable
-instead:
+The selected Python must be able to import the managed release and the
+Windows-service runtime (`pywin32`) without relying on the interactive user's
+site-packages. If Preflight reports
+`windows_service_runtime_unavailable`, install the optional Windows-service
+dependency into the inventory-confirmed machine runtime, then rerun
+Preflight; do not start a service that has not passed it.
 
-```powershell
-[Environment]::SetEnvironmentVariable(
-    'RUNNER_OBSERVABILITY_RUNNER_ID',
-    ([guid]::NewGuid()).Guid,
-    'Machine'
-)
-```
+For `PrivateCa` or `SelfSigned`, add `-MonitorCertificatePath`, the
+independently confirmed `-ExpectedCertificateSha256`, and `-ImportCertificate`.
+For a hosts-file mapping, add `-AllowHostsChange` only after inspecting the
+existing `monitor-test.local` line.
+
+Do not set `RUNNER_OBSERVABILITY_RUNNER_ID` manually during a normal install;
+`Configure` persists the stable value created or verified in `runner-id.txt`.
+If this is a cloned machine image, deliberately supply a new machine-specific
+UUID through the supported override only after confirming the clone boundary.
 
 ### Step 4 -- restart the verified Runner launch process once
 
@@ -795,11 +915,11 @@ icacls.exe $pythonRoot /grant ("{0}:(OI)(CI)(RX)" -f $localService) /T /C
 if ($LASTEXITCODE -ne 0) { throw "Failed to grant Python runtime access: $pythonRoot" }
 ```
 
-The `Install` action registers the service but does not start it. Start and
-verify it explicitly:
+The `Configure` action registers the service but does not start it. Start and
+verify it explicitly with the Runner entry point:
 
 ```powershell
-./scripts/Install-RunnerHeartbeatService.ps1 -Action Start
+./scripts/Install-RunnerObservabilityRunner.ps1 -Action Start
 sc.exe queryex RunnerObservabilityHeartbeat
 ```
 

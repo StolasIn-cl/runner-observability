@@ -16,13 +16,17 @@ REASON_WINDOWS_SERVICE_UNAVAILABLE = "windows_service_unavailable"
 REASON_HEARTBEAT_SERVICE_FAILED = "heartbeat_service_failed"
 
 
-def build_heartbeat_service_bin_path(config_path: Path | str, python_executable: Path | str) -> str:
-    """Build an SCM command that exposes only the heartbeat config path."""
+def build_heartbeat_service_bin_path(
+    config_path: Path | str,
+    python_executable: Path | str,
+    module_path: Path | str,
+) -> str:
+    """Build an SCM command rooted at the managed release source directory."""
+    launcher_path = Path(module_path) / "runner_heartbeat_service.py"
     return subprocess.list2cmdline(
         [
             str(python_executable),
-            "-m",
-            "runner_observability.heartbeat_service",
+            str(launcher_path),
             "run",
             "--config",
             str(config_path),

@@ -214,11 +214,16 @@ function Register-RunnerHeartbeatService {
         [Parameter(Mandatory = $true)][string]$ServiceName,
         [Parameter(Mandatory = $true)][string]$PythonPath,
         [Parameter(Mandatory = $true)][string]$ConfigPath,
+        [Parameter(Mandatory = $true)][string]$ModulePath,
         [Parameter(Mandatory = $true)][string]$ServiceAccount
     )
 
     Assert-RunnerHeartbeatServiceAbsent -ServiceName $ServiceName
-    $binPath = '"{0}" -m runner_observability.heartbeat_service run --config "{1}"' -f $PythonPath, $ConfigPath
+    $launcherPath = Join-Path $ModulePath "runner_heartbeat_service.py"
+    if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
+        throw [System.InvalidOperationException]::new("runtime_path_missing")
+    }
+    $binPath = '"{0}" "{1}" run --config "{2}"' -f $PythonPath, $launcherPath, $ConfigPath
     Invoke-RunnerHeartbeatNativeCommand -FilePath "sc.exe" -ArgumentList @(
         "create", $ServiceName, "binPath=", $binPath, "start=", "auto", "DisplayName=", "Runner Observability Heartbeat"
     ) | Out-Null

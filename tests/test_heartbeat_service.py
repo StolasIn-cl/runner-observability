@@ -89,12 +89,23 @@ class HeartbeatServiceTests(unittest.TestCase):
         self.assertNotIn("token-value", serialized)
 
     def test_service_command_contains_only_config_path(self) -> None:
-        command = build_heartbeat_service_bin_path("C:/secure/heartbeat-config.json", "C:/Python/python.exe")
+        command = build_heartbeat_service_bin_path(
+            "C:/secure/heartbeat-config.json",
+            "C:/Python/python.exe",
+            "C:/runner-observability-agent/releases/1.0.0/src",
+        )
 
-        self.assertIn("runner_observability.heartbeat_service", command)
+        self.assertIn("runner_heartbeat_service.py", command)
+        self.assertIn("releases\\1.0.0\\src", command)
         self.assertIn("heartbeat-config.json", command)
         self.assertNotIn("--token", command)
         self.assertNotIn("secret-token", command)
+
+    def test_managed_release_contains_the_service_launcher(self) -> None:
+        launcher = ROOT / "src" / "runner_heartbeat_service.py"
+
+        self.assertTrue(launcher.is_file())
+        self.assertIn("runner_observability.heartbeat_service", launcher.read_text(encoding="utf-8"))
 
     def test_non_windows_host_reports_stable_unavailable_reason(self) -> None:
         with tempfile.TemporaryDirectory(prefix="runner-heartbeat-config-") as directory:
@@ -141,7 +152,7 @@ class HeartbeatServiceTests(unittest.TestCase):
         for term in ("install", "start", "stop", "status", "restart", "uninstall", "tokenpath", "statepath", "endpoint", "start=", "sc.exe"):
             self.assertIn(term, source)
         self.assertIn("nt authority\\localservice", source)
-        self.assertIn("heartbeat_service run --config", source)
+        self.assertIn("runner_heartbeat_service.py", source)
         self.assertIn('"binpath="', source)
         self.assertIn('"obj="', source)
         self.assertIn('"failure"', source)
@@ -189,7 +200,8 @@ class HeartbeatServiceTests(unittest.TestCase):
 
     def test_service_command_remains_config_path_only(self) -> None:
         source = MODULE.read_text(encoding="utf-8")
-        self.assertIn("heartbeat_service run --config", source)
+        self.assertIn("runner_heartbeat_service.py", source)
+        self.assertIn("$ModulePath", source)
         self.assertNotIn("--token ", source)
         self.assertNotIn("--endpoint ", source)
 

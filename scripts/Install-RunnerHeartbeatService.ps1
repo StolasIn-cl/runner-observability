@@ -4,6 +4,7 @@ param(
     [string]$Action = "Install",
     [string]$ConfigPath = "",
     [string]$PythonPath = "",
+    [string]$ModulePath = "",
     [string]$Endpoint = "",
     [string]$TokenPath = "",
     [string]$RunnerId = "",
@@ -21,7 +22,7 @@ $modulePath = Join-Path $PSScriptRoot "RunnerHeartbeat.Service.psm1"
 Import-Module $modulePath -Force
 
 function Assert-InstallInput {
-    if ([string]::IsNullOrWhiteSpace($ConfigPath) -or [string]::IsNullOrWhiteSpace($PythonPath) -or [string]::IsNullOrWhiteSpace($Endpoint) -or [string]::IsNullOrWhiteSpace($TokenPath) -or [string]::IsNullOrWhiteSpace($RunnerId) -or [string]::IsNullOrWhiteSpace($StatePath)) {
+    if ([string]::IsNullOrWhiteSpace($ConfigPath) -or [string]::IsNullOrWhiteSpace($PythonPath) -or [string]::IsNullOrWhiteSpace($ModulePath) -or [string]::IsNullOrWhiteSpace($Endpoint) -or [string]::IsNullOrWhiteSpace($TokenPath) -or [string]::IsNullOrWhiteSpace($RunnerId) -or [string]::IsNullOrWhiteSpace($StatePath)) {
         throw [System.InvalidOperationException]::new("service_configuration_missing")
     }
     if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
@@ -29,6 +30,10 @@ function Assert-InstallInput {
     }
     if (-not (Test-Path -LiteralPath $TokenPath -PathType Leaf)) {
         throw [System.InvalidOperationException]::new("auth_credential_file_missing")
+    }
+    if (-not (Test-Path -LiteralPath $ModulePath -PathType Container) -or
+        -not (Test-Path -LiteralPath (Join-Path $ModulePath "runner_heartbeat_service.py") -PathType Leaf)) {
+        throw [System.InvalidOperationException]::new("runtime_path_missing")
     }
     try {
         [guid]::Parse($RunnerId) | Out-Null
@@ -69,7 +74,7 @@ function Invoke-Install {
     Set-RunnerHeartbeatFileAcl -Path $ConfigPath -ServiceAccount $ServiceAccount -Access "R"
     Set-RunnerHeartbeatFileAcl -Path $TokenPath -ServiceAccount $ServiceAccount -Access "R"
     Set-RunnerHeartbeatDirectoryAcl -Path $stateDirectory -ServiceAccount $ServiceAccount
-    Register-RunnerHeartbeatService -ServiceName $ServiceName -PythonPath $PythonPath -ConfigPath $ConfigPath -ServiceAccount $ServiceAccount
+    Register-RunnerHeartbeatService -ServiceName $ServiceName -PythonPath $PythonPath -ConfigPath $ConfigPath -ModulePath $ModulePath -ServiceAccount $ServiceAccount
     Write-Output "service operation=install result=pass"
 }
 
