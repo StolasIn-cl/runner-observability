@@ -1247,6 +1247,34 @@ class RunbookShapeTests(unittest.TestCase):
         self.assertIn("issue #6", lowered)
         self.assertIn("real", lowered)
 
+    def test_runbook_documents_monitor_ip_confirmation_before_runner_configuration(self) -> None:
+        lowered = self.text.lower()
+        for term in (
+            "get-netipconfiguration",
+            "get-nettcpconnection",
+            "localport 8765",
+            "test-netconnection",
+            "confirmed monitor ipv4",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, lowered)
+
+    def test_runbook_documents_privileged_file_transfer_without_exposing_token(self) -> None:
+        lowered = self.text.lower()
+        for term in (
+            "administrative powershell",
+            "copy-item",
+            "monitor-token.txt",
+            "monitor.crt",
+            "monitor.key",
+            "access denied",
+            "repairpermissions",
+            "token value is never",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, lowered)
+        self.assertIn("c$", lowered)
+
     def test_update_script_can_enable_existing_service_lifecycle(self) -> None:
         update_script = (REPO_ROOT / "scripts" / "Update-RunnerObservability.ps1").read_text(encoding="utf-8")
         self.assertIn("$ServiceName", update_script)

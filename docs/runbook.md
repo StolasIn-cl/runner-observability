@@ -59,6 +59,40 @@ the result with `CONTEXT.md`. The Monitor entry point starts with the same
 read-only inventory before every operation and supports `-WhatIf` without
 creating files, changing ACLs, touching the firewall, or changing SCM state.
 
+### Confirm the Monitor IPv4 address and ingest listener (read-only)
+
+Run this on the Monitor Host after Step 0. Select the IPv4 address that the
+Runner can route to; do not use loopback, APIPA, or a disconnected interface.
+If the Monitor has multiple usable addresses, use the address on the network
+shared with the Runner:
+
+```powershell
+Get-NetIPConfiguration |
+    Where-Object { $_.NetAdapter.Status -eq 'Up' } |
+    Select-Object InterfaceAlias,
+        @{Name='IPv4'; Expression={
+            (@($_.IPv4Address | ForEach-Object { $_.IPAddress }) -join ', ')
+        }},
+        IPv4DefaultGateway
+
+Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue |
+    Select-Object LocalAddress, LocalPort, OwningProcess
+```
+
+Record the selected value as the confirmed Monitor IPv4. Before Runner
+configuration, run this from the Runner to prove that the selected address is
+reachable:
+
+```powershell
+$monitorIp = '<CONFIRMED_MONITOR_IP>'
+Test-NetConnection -ComputerName $monitorIp -Port 8765
+```
+
+Use the same confirmed value for `-MonitorIp`, the endpoint, and the optional
+`monitor-test.local` hosts mapping. Keep the Monitor firewall scope
+(`-RunnerAddress`) based on the separately confirmed Runner IPv4 address.
+Never copy a placeholder address from this runbook.
+
 The following uses an existing, operator-supplied certificate pair. `PublicCa`,
 `PrivateCa`, and `Existing` all require both `-TlsCertPath` and `-TlsKeyPath`;
 they never silently replace those files.
@@ -148,8 +182,62 @@ firewall, or CI acceptance.
 ## Runner Host onboarding (after Monitor validation)
 
 Transfer only the token file and, for a private-CA/self-signed trust model,
-the public `monitor.crt`. Never copy `monitor.key`. Run the Runner entry point
-after substituting the confirmed Monitor address:
+the public `monitor.crt`. Never copy `monitor.key`. The Monitor administrator
+should perform the transfer from an elevated administrative PowerShell; the operator does not
+need to display or read the token value:
+
+```powershell
+$monitorSecretRoot = 'C:\runner-observability-secrets'       # Monitor Step 0 confirmed
+$runnerHost = '<CONFIRMED_RUNNER_HOST>'
+$runnerSecretRoot = "\\$runnerHost\C$\runner-observability-secrets" # Runner Step 0 confirmed
+
+if (Test-Path -LiteralPath (Join-Path $runnerSecretRoot 'monitor.key') -PathType Leaf) {
+    throw 'Unexpected monitor.key on Runner; stop before copying anything'
+}
+
+New-Item -ItemType Directory -Force -Path $runnerSecretRoot | Out-Null
+foreach ($name in @('monitor-token.txt', 'monitor.crt')) {
+    $source = Join-Path $monitorSecretRoot $name
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw ("Missing Monitor source file: {0}" -f $name)
+    }
+    Copy-Item -LiteralPath $source -Destination $runnerSecretRoot -Force
+}
+
+$sourceCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+    (Join-Path $monitorSecretRoot 'monitor.crt'))
+$runnerCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+    (Join-Path $runnerSecretRoot 'monitor.crt'))
+if ($sourceCert.Thumbprint -ne $runnerCert.Thumbprint) {
+    throw 'Runner monitor.crt thumbprint does not match the Monitor source'
+}
+
+Get-Item -LiteralPath (Join-Path $runnerSecretRoot 'monitor-token.txt'),
+    (Join-Path $runnerSecretRoot 'monitor.crt') |
+    Select-Object Name, Length
+Write-Output 'transfer.certificate=match'
+```
+
+This copies only the token and public certificate. It never places the token
+in a command-line argument or output. If the copy reports `Access Denied` even
+in the elevated Monitor shell, inspect the ACLs of the two exact source files.
+When the files belong to this deployment, run the existing permission repair
+with the inventory-confirmed Monitor paths, then retry the copy:
+
+```powershell
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action RepairPermissions -PythonPath $python -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $monitorSecretRoot `
+    -TokenPath (Join-Path $monitorSecretRoot 'monitor-token.txt') `
+    -TlsCertPath (Join-Path $monitorSecretRoot 'monitor.crt') `
+    -TlsKeyPath (Join-Path $monitorSecretRoot 'monitor.key')
+```
+
+Do not grant `Everyone`, recursively open the secrets directory, or copy
+`monitor.key`. If the ACL is not deployment-owned, stop and use the
+organization's exact-file ACL recovery process.
+
+Run the Runner entry point after substituting the confirmed Monitor address:
 
 ```powershell
 $python = 'C:\Python311\python.exe'
