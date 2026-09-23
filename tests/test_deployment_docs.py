@@ -1282,6 +1282,22 @@ class RunbookShapeTests(unittest.TestCase):
         self.assertIn("does not install", update_script.lower())
 
 
+class ReadmeOnboardingShapeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    def test_full_clean_flow_transfers_new_secrets_after_reset(self) -> None:
+        lowered = self.text.lower()
+        for term in (
+            "after the full-clean reset",
+            "do not run this transfer block",
+            "reset removes the old",
+            "token/certificate pair; transfer the newly generated current pair",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, lowered)
+
+
 class CanaryEvidenceTemplateShapeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.text = (REPO_ROOT / "docs" / "canary-evidence-template.md").read_text(encoding="utf-8")

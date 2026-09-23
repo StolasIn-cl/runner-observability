@@ -382,7 +382,13 @@ Because the Monitor regenerated both files, any copies and trust entry from a
 previous Monitor generation are stale; the rebuilt Runner must receive the
 current pair through the approved secure transfer channel.
 
-### Step 1 -- transfer the current pair from the Monitor as administrator
+### Step 1 -- after the full-clean reset, transfer the current pair from the Monitor
+
+For the explicit full-clean acceptance below, do not run this transfer block
+until `Full-clean Runner reset` has completed. That reset removes the old
+Runner token/certificate pair; transfer the newly generated current pair only
+after the reset has finished. For a normal new install, Step 0 still remains
+mandatory before this transfer.
 
 The Monitor administrator can perform this transfer without displaying or
 reading the token value. Run the following from an elevated PowerShell on the
@@ -443,9 +449,11 @@ Run this only with the inventory-confirmed Monitor paths. Do not grant
 `monitor.key`. If the ACL is not deployment-owned, stop and use the
 organization's exact-file ACL recovery process instead.
 
-The required order is Step 0 inventory, certificate/token and host resolution,
-release staging, identity/CI ACL setup, Runner `Preflight`, Runner `Configure`,
-Heartbeat start, Runner listener restart, and one real CI job. Do not run
+For the full-clean acceptance, the required order is Step 0 inventory, Monitor
+IP/listener confirmation, full-clean Runner reset, current certificate/token
+transfer and host resolution, release staging, identity/CI ACL setup, Runner
+`Preflight`, Runner `Configure`, Heartbeat start, Runner listener restart, and
+one real CI job. Do not run
 `Preflight` or `Configure` before Step 2 has created a valid active release;
 the entry point rejects that state and the service launcher uses that release's
 `src` directory.

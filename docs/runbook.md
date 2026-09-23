@@ -181,6 +181,12 @@ firewall, or CI acceptance.
 
 ## Runner Host onboarding (after Monitor validation)
 
+If this is the explicit full-clean Runner rebuild, complete the full-clean
+reset in the `README.md` procedure before running the transfer below. The
+reset removes the old Runner token/certificate pair; copy the newly generated
+current pair only after the reset has finished. Step 0 inventory remains
+mandatory in either case.
+
 Transfer only the token file and, for a private-CA/self-signed trust model,
 the public `monitor.crt`. Never copy `monitor.key`. The Monitor administrator
 should perform the transfer from an elevated administrative PowerShell; the operator does not
