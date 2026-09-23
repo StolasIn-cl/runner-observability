@@ -147,6 +147,13 @@ class RunnerWizardContractTests(unittest.TestCase):
         wizard = self.text.split("function Invoke-RunnerWizard {", 1)[1]
         self.assertIn("Remove-RunnerWizardInstallRoot", wizard)
 
+    def test_clean_reset_uses_native_rd_for_managed_install_root_cleanup(self) -> None:
+        cleanup = self.text.split("function Remove-RunnerWizardInstallRoot", 1)[1].split(
+            "function Invoke-RunnerWizardSmokeTest", 1
+        )[0]
+        self.assertRegex(cleanup, r'(?im)&\s*cmd\.exe\s+/d\s+/c\s+rd\s+/s\s+/q\s+"\$InstallRoot"')
+        self.assertIn("$nativeDeleteExitCode", cleanup)
+
     def test_wizard_clears_only_owned_machine_environment_variables(self) -> None:
         for name in (
             "RUNNER_OBSERVABILITY_INSTALL_ROOT",

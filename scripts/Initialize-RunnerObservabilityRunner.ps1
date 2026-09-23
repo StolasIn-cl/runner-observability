@@ -244,7 +244,15 @@ function Remove-RunnerWizardInstallRoot {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw (New-RunnerWizardError -Reason "install_root_reparse_point")
         }
-        Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop
+        # PowerShell Remove-Item can report Access Denied for this managed
+        # tree even when the exact same tree is removable by the Windows
+        # directory-delete primitive. Keep the target exact and let cmd.exe
+        # invoke rd without interpolating any operator-controlled command.
+        $nativeDeleteOutput = @(& cmd.exe /d /c rd /s /q "$InstallRoot" 2>&1)
+        $nativeDeleteExitCode = $LASTEXITCODE
+        if (($nativeDeleteExitCode -ne 0) -or (Test-Path -LiteralPath $InstallRoot)) {
+            throw (New-RunnerWizardError -Reason "reset_install_root_cleanup_failed")
+        }
     }
     catch {
         if ($_.Exception.Message -eq "install_root_reparse_point") {
@@ -260,7 +268,11 @@ function Remove-RunnerWizardInstallRoot {
             if ($LASTEXITCODE -ne 0) {
                 throw (New-RunnerWizardError -Reason "reset_install_root_cleanup_failed")
             }
-            Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop
+            $nativeDeleteOutput = @(& cmd.exe /d /c rd /s /q "$InstallRoot" 2>&1)
+            $nativeDeleteExitCode = $LASTEXITCODE
+            if (($nativeDeleteExitCode -ne 0) -or (Test-Path -LiteralPath $InstallRoot)) {
+                throw (New-RunnerWizardError -Reason "reset_install_root_cleanup_failed")
+            }
         }
         catch {
             if ($_.Exception.Message -eq "reset_install_root_cleanup_failed") {
