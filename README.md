@@ -131,6 +131,64 @@ use `scripts/Install-RunnerObservabilityMonitor.ps1`. The script performs its
 own inventory gate before every action; `Preflight` and `-WhatIf` are
 read-only.
 
+### Clean Monitor reset and first installation
+
+Use this reset only when intentionally discarding the Monitor's local
+telemetry history and generated credentials. It is not the update procedure.
+Run Step 0 first, compare the result with `CONTEXT.md`, and confirm that the
+paths below are the inventory-confirmed paths. `Uninstall` removes only the
+named service and its owned firewall rule; it preserves persistent files until
+the operator explicitly removes them.
+
+```powershell
+$serviceName = 'RunnerObservabilityMonitor'
+$config = 'C:\runner-observability\service-config.json'
+$database = 'C:\runner-observability-data\monitor.sqlite'
+$secretRoot = 'C:\runner-observability-secrets'
+$ownedFiles = @(
+    (Join-Path $secretRoot 'monitor-token.txt'),
+    (Join-Path $secretRoot 'monitor.crt'),
+    (Join-Path $secretRoot 'monitor.key'),
+    $config,
+    $database
+)
+
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Uninstall -ServiceName $serviceName `
+    -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Status -ServiceName $serviceName `
+    -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+
+$existing = @($ownedFiles | Where-Object {
+    Test-Path -LiteralPath $_ -PathType Leaf
+})
+if ($existing.Count -gt 0) {
+    Write-Output 'The following exact Monitor-owned files will be permanently removed:'
+    $existing | ForEach-Object { Write-Output "  $_" }
+    $confirmation = Read-Host 'Type RESET to remove them'
+    if ($confirmation -cne 'RESET') {
+        throw 'Clean reset cancelled'
+    }
+    Remove-Item -LiteralPath $existing -Force
+}
+
+$remaining = @($ownedFiles | Where-Object {
+    Test-Path -LiteralPath $_ -PathType Leaf
+})
+if ($remaining.Count -gt 0) {
+    throw ('Clean reset incomplete: ' + ($remaining -join ', '))
+}
+```
+
+Do not delete these files during a normal update: the database contains the
+Monitor history, and the token/certificate pair must remain stable for the
+Runner configuration. The next `Install` creates missing parent directories,
+generates the token and self-signed certificate, and registers the service.
+
+Choose exactly one certificate path below. Do not run both the operator-supplied
+certificate path and the self-signed path during the same clean installation.
+
 Use paired operator-supplied files for `PublicCa`, `PrivateCa`, or `Existing`:
 
 ```powershell
@@ -168,7 +226,26 @@ private key as PKCS#8 PEM; it never calls OpenSSL. It fails closed with
 generation path is available, and does not start the service. A `monitor.key`
 is never copied to a Runner.
 
+For a self-signed clean installation, define the paths and run `Preflight`
+before `Install`:
+
 ```powershell
+$python = 'C:\Python311\python.exe'
+$config = 'C:\runner-observability\service-config.json'
+$database = 'C:\runner-observability-data\monitor.sqlite'
+$secretRoot = 'C:\runner-observability-secrets'
+$token = Join-Path $secretRoot 'monitor-token.txt'
+$cert = Join-Path $secretRoot 'monitor.crt'
+$key = Join-Path $secretRoot 'monitor.key'
+$runnerIp = '192.0.2.10' # replace with the inventory-confirmed Runner address
+
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Preflight -PythonPath $python -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
+    -TlsCertPath $cert -TlsKeyPath $key -CertificateMode SelfSigned `
+    -AllowDevSelfSigned -TrustSelfSignedCertificate `
+    -RunnerAddress $runnerIp
+
 .\scripts\Install-RunnerObservabilityMonitor.ps1 `
     -Action Install -PythonPath $python -ConfigPath $config `
     -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
@@ -203,12 +280,61 @@ token, certificate, key, config, database, and Runner data.
     -PythonPath $python -ConfigPath $config -DatabasePath $database `
     -SecretRoot $secretRoot -TokenPath $token -TlsCertPath $cert `
     -TlsKeyPath $key -RunnerAddress $runnerIp
-.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Status -ServiceName 'RunnerObservabilityMonitor'
-.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Start -ServiceName 'RunnerObservabilityMonitor'
-.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Stop -ServiceName 'RunnerObservabilityMonitor'
-.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Restart -ServiceName 'RunnerObservabilityMonitor'
-.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Uninstall -ServiceName 'RunnerObservabilityMonitor'
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Status `
+    -ServiceName 'RunnerObservabilityMonitor' -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Start `
+    -ServiceName 'RunnerObservabilityMonitor' -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Stop `
+    -ServiceName 'RunnerObservabilityMonitor' -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Restart `
+    -ServiceName 'RunnerObservabilityMonitor' -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot
+.\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Uninstall `
+    -ServiceName 'RunnerObservabilityMonitor' -ConfigPath $config `
+    -DatabasePath $database -SecretRoot $secretRoot
 ```
+
+After a fresh install, start and verify the service explicitly:
+
+```powershell
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Start -ServiceName 'RunnerObservabilityMonitor' `
+    -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Status -ServiceName 'RunnerObservabilityMonitor' `
+    -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+Get-NetTCPConnection -LocalPort 8765 -State Listen
+curl.exe -k -i https://127.0.0.1:8765/api/health
+```
+
+Open the browser Dashboard at `https://monitor-test.local:8765/`, not the
+numeric loopback URL. The hostname must resolve to the Monitor Host. With
+`-TrustSelfSignedCertificate`, the browser running as the installing user can
+trust the generated certificate.
+
+### Monitor update and restart
+
+For a Monitor Python package or static Dashboard update, first complete the
+inventory and deploy the verified package using the package-deployment
+procedure below. Then restart only the verified Monitor service:
+
+```powershell
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Restart -ServiceName 'RunnerObservabilityMonitor' `
+    -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+.\scripts\Install-RunnerObservabilityMonitor.ps1 `
+    -Action Status -ServiceName 'RunnerObservabilityMonitor' `
+    -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+Get-NetTCPConnection -LocalPort 8765 -State Listen
+curl.exe -k -i https://127.0.0.1:8765/api/health
+```
+
+Restarting the Monitor is required after deploying Monitor Python or static
+Dashboard files. A Dashboard-only Monitor update does not require a Runner
+restart; refresh the browser after the Monitor returns to `running`.
 
 After Monitor `Preflight`/install and a real Monitor service check, continue
 with the Runner onboarding below. A passing local test suite is not live
