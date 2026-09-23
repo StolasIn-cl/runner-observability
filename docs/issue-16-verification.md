@@ -6,7 +6,7 @@ are recorded.
 
 ## Local verification
 
-- Targeted onboarding/service suite: 75 tests passed.
+- Targeted onboarding/service suite: 76 tests passed.
 - PowerShell parser: Monitor, Runner, shared Bootstrap, Monitor service, and
   Heartbeat service scripts all parsed successfully.
 - Monitor `Preflight` was executed on `STOLASIN-DT2` with the inventory-confirmed
@@ -37,7 +37,9 @@ are recorded.
   generic `monitor_onboarding_failed`; the existing `service-config.json` was
   unchanged, and neither the Firewall rule nor Service was registered. The
   installer now maps `service_config_write_failed` explicitly and repairs the
-  ACL of a preserved config before the atomic reinstall write.
+  ACL of a preserved config before the atomic reinstall write. The shared
+  atomic writer now supplies a temporary backup path because Windows PowerShell
+  5.1 rejects a null `File.Replace` backup argument.
 
 ## Known baseline
 

@@ -32,11 +32,18 @@ function Write-RunnerObservabilityConfigAtomic {
     }
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
     $temporaryPath = Join-Path $parent ("." + (Split-Path -Leaf $Path) + "." + $PID + ".tmp")
+    $backupPath = Join-Path $parent ("." + (Split-Path -Leaf $Path) + "." + $PID + "." + [guid]::NewGuid().ToString("N") + ".bak")
     try {
         $json = $Configuration | ConvertTo-Json -Depth 5
         [System.IO.File]::WriteAllText($temporaryPath, $json, [System.Text.UTF8Encoding]::new($false))
         if (Test-Path -LiteralPath $Path -PathType Leaf) {
-            [System.IO.File]::Replace($temporaryPath, $Path, $null)
+            # Windows PowerShell/.NET Framework rejects a null backup path.
+            # Use a unique same-directory backup so replacement stays atomic,
+            # then remove the backup after the destination is active.
+            [System.IO.File]::Replace($temporaryPath, $Path, $backupPath)
+            if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+                [System.IO.File]::Delete($backupPath)
+            }
         }
         else {
             [System.IO.File]::Move($temporaryPath, $Path)
@@ -48,6 +55,9 @@ function Write-RunnerObservabilityConfigAtomic {
     finally {
         if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
             Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
         }
     }
 }

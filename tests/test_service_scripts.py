@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 from runner_observability.deploy import WindowsScServiceLifecycle
@@ -96,6 +97,25 @@ class ServiceScriptContractTests(unittest.TestCase):
         absent_check = self.script_text.index("Assert-RunnerObservabilityServiceAbsent")
         config_write = self.script_text.index("Write-RunnerObservabilityConfigAtomic")
         self.assertLess(absent_check, config_write)
+
+    def test_config_atomic_replace_supports_existing_file_on_windows_powershell(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "service-config.json"
+            path.write_text('{"old":true}\n', encoding="utf-8")
+            module = str(SERVICE_MODULE).replace("'", "''")
+            target = str(path).replace("'", "''")
+            script = f"""
+Import-Module '{module}' -Force
+Write-RunnerObservabilityConfigAtomic `
+    -Path '{target}' `
+    -Configuration @{{ service_name = 'RunnerObservabilityMonitor'; port = 8765 }}
+"""
+            completed = run_powershell(script)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+            self.assertIn('RunnerObservabilityMonitor', path.read_text(encoding="utf-8"))
+            self.assertEqual(list(path.parent.glob("*.tmp")), [])
+            self.assertEqual(list(path.parent.glob("*.bak")), [])
 
     def test_lifecycle_commands_use_bounded_actual_state_readback(self) -> None:
         for term in (
