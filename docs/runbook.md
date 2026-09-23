@@ -187,8 +187,9 @@ reset removes the old Runner token/certificate pair; copy the newly generated
 current pair only after the reset has finished. Step 0 inventory remains
 mandatory in either case.
 
-For the normal clean rebuild, use the Runner-side wizard after updating the
-checkout with the approved `git pull --ff-only` procedure:
+For the normal clean rebuild, use the Runner-side wizard from an elevated
+**Windows PowerShell as Administrator** window after updating the checkout
+with the approved `git pull --ff-only` procedure:
 
 ```powershell
 .\scripts\Initialize-RunnerObservabilityRunner.ps1 `
@@ -206,6 +207,10 @@ channel. It never copies `monitor.key`, prints token contents, deletes
 HEAD and runs `Preflight`, `Configure`, and Heartbeat `Start` before reporting
 `status=OK`. A direct `Runner.Listener.exe` process still needs one manual
 restart after machine environment changes, followed by a real CI job.
+`status=BLOCKED reason=administrator_required` means the shell is not elevated;
+`secret_inventory_access_denied` means the elevated shell still cannot inspect
+the exact secret directory and requires ACL repair. Do not weaken the secret
+directory ACL to bypass either gate.
 
 Transfer only the token file and, for a private-CA/self-signed trust model,
 the public `monitor.crt`. Never copy `monitor.key`. The Monitor administrator

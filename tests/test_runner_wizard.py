@@ -59,6 +59,7 @@ class RunnerWizardContractTests(unittest.TestCase):
 
     def test_inventory_is_the_first_operational_step_and_clean_reset_is_gated(self) -> None:
         operational_body = self.text.split("function Invoke-RunnerWizard {", 1)[1]
+        elevation = operational_body.find("Assert-RunnerWizardAdministrator")
         inventory = operational_body.find("Get-RunnerObservabilityInventory")
         gate = operational_body.find("Assert-RunnerObservabilityInventoryGate")
         mutation_candidates = (
@@ -70,11 +71,19 @@ class RunnerWizardContractTests(unittest.TestCase):
             index >= 0 for index in mutation_candidates
         ) else -1
         self.assertGreaterEqual(inventory, 0)
+        self.assertGreaterEqual(elevation, 0)
         self.assertGreaterEqual(gate, 0)
         self.assertGreaterEqual(mutation, 0)
+        self.assertLess(elevation, inventory)
         self.assertLess(inventory, mutation)
         self.assertLess(gate, mutation)
         self.assertRegex(self.text, r"(?im)Read-Host.+RESET-RUNNER")
+
+    def test_elevation_failure_is_stable_and_does_not_expose_acl_details(self) -> None:
+        self.assertRegex(self.text, r"(?im)WindowsPrincipal")
+        self.assertRegex(self.text, r"(?im)IsInRole")
+        self.assertIn('New-RunnerWizardError -Reason "administrator_required"', self.text)
+        self.assertIn('New-RunnerWizardError -Reason "secret_inventory_access_denied"', self.text)
 
     def test_secret_gate_requires_token_and_certificate_without_printing_contents(self) -> None:
         self.assertIn("monitor-token.txt", self.text)

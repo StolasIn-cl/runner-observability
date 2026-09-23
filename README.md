@@ -385,10 +385,12 @@ current pair through the approved secure transfer channel.
 ### Recommended one-command clean rebuild
 
 After the Runner Step 0 inventory, run the wizard from the updated repository
-checkout on the Runner. If this checkout needs the latest script, update it
-first with the repository's normal `git pull --ff-only` procedure. The wizard
-uses the checkout's current immutable `HEAD`; it does not contain a hard-coded
-old revision:
+checkout on the Runner from an elevated **Windows PowerShell as Administrator**
+window. The secrets directory and machine service settings are intentionally
+not readable/writable by an ordinary interactive shell. If this checkout needs
+the latest script, update it first with the repository's normal
+`git pull --ff-only` procedure. The wizard uses the checkout's current immutable
+`HEAD`; it does not contain a hard-coded old revision:
 
 ```powershell
 .\scripts\Initialize-RunnerObservabilityRunner.ps1 `
@@ -418,6 +420,10 @@ accepts `monitor.key`, removes `C:\actions-runner`, unregisters the GitHub
 Actions Runner, or deletes the source checkout. For a self-signed/private-CA
 certificate it prints only the public SHA-256 fingerprint and requires the
 operator to type `TRUST-CERTIFICATE` after verifying it against the Monitor.
+If it reports `status=BLOCKED reason=administrator_required`, close that
+window and rerun from an elevated PowerShell; do not weaken the secret-folder
+ACL. `secret_inventory_access_denied` means the elevated shell still cannot
+inspect the exact secret directory and requires ACL repair before continuing.
 If an old matching LocalMachine trust entry is found, it requires the separate
 `REMOVE-OLD-MONITOR-CERT` confirmation before removing that exact certificate.
 The final `status=OK` means the observability agent and Heartbeat service are

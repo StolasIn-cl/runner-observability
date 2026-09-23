@@ -55,6 +55,14 @@ function New-RunnerWizardError {
     return [System.InvalidOperationException]::new($Reason)
 }
 
+function Assert-RunnerWizardAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw (New-RunnerWizardError -Reason "administrator_required")
+    }
+}
+
 function Get-FullPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -280,14 +288,20 @@ function Invoke-RunnerWizard {
     if (-not $CleanRebuild) {
         throw (New-RunnerWizardError -Reason "clean_rebuild_required")
     }
+    Assert-RunnerWizardAdministrator
     Assert-RunnerWizardOwnedPaths
 
     # Step 0: this is deliberately the first target-host operation.
-    $inventory = Get-RunnerObservabilityInventory `
-        -CandidateRunnerRoots @("C:\actions-runner") `
-        -CandidateInstallRoots @($InstallRoot) `
-        -CandidateSecretRoots @($SecretRoot) `
-        -ServiceNamePatterns @("*action*", "*runner*", "*observability*", "*promeo*", $ServiceName)
+    try {
+        $inventory = Get-RunnerObservabilityInventory `
+            -CandidateRunnerRoots @("C:\actions-runner") `
+            -CandidateInstallRoots @($InstallRoot) `
+            -CandidateSecretRoots @($SecretRoot) `
+            -ServiceNamePatterns @("*action*", "*runner*", "*observability*", "*promeo*", $ServiceName)
+    }
+    catch [System.UnauthorizedAccessException] {
+        throw (New-RunnerWizardError -Reason "secret_inventory_access_denied")
+    }
     $initialInspection = Assert-RunnerObservabilityInventoryGate `
         -Inventory $inventory -InstallRoot $InstallRoot -Operation "Troubleshooting" -Role "Runner"
     Write-Output "inventory.computer=$env:COMPUTERNAME"
