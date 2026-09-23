@@ -336,6 +336,22 @@ function Set-RunnerObservabilityDirectoryAcl {
     )
 }
 
+function Get-RunnerObservabilityCurrentAccount {
+    [CmdletBinding()]
+    param()
+
+    try {
+        $account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        if ([string]::IsNullOrWhiteSpace($account)) {
+            throw [System.InvalidOperationException]::new("runtime_account_missing")
+        }
+        return $account
+    }
+    catch {
+        throw (New-RunnerObservabilityStableError -Reason "runtime_acl_failed")
+    }
+}
+
 function Set-RunnerObservabilityRuntimeAcl {
     [CmdletBinding()]
     param(
@@ -346,7 +362,9 @@ function Set-RunnerObservabilityRuntimeAcl {
     if (-not (Test-Path -LiteralPath $Path)) {
         throw (New-RunnerObservabilityStableError -Reason "runtime_path_missing")
     }
+    $runtimeUser = Get-RunnerObservabilityCurrentAccount
     $serviceGrant = "{0}:(OI)(CI)(RX)" -f $ServiceAccount
+    $runtimeUserGrant = "{0}:(OI)(CI)(RX)" -f $runtimeUser
     Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_acl_failed" -ArgumentList @(
         $Path,
         "/inheritance:r",
@@ -354,6 +372,13 @@ function Set-RunnerObservabilityRuntimeAcl {
         "SYSTEM:(OI)(CI)(F)",
         "Administrators:(OI)(CI)(F)",
         $serviceGrant,
+        "/t",
+        "/c"
+    )
+    Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_acl_failed" -ArgumentList @(
+        $Path,
+        "/grant",
+        $runtimeUserGrant,
         "/t",
         "/c"
     )
@@ -409,13 +434,20 @@ function Set-RunnerObservabilityRuntimeFileAcl {
         }
         throw (New-RunnerObservabilityStableError -Reason "runtime_acl_failed")
     }
+    $runtimeUser = Get-RunnerObservabilityCurrentAccount
     $serviceGrant = "{0}:(RX)" -f $ServiceAccount
+    $runtimeUserGrant = "{0}:(RX)" -f $runtimeUser
     Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_acl_failed" -ArgumentList @(
         $Path,
         "/grant:r",
         "SYSTEM:(F)",
         "Administrators:(F)",
         $serviceGrant
+    )
+    Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_acl_failed" -ArgumentList @(
+        $Path,
+        "/grant",
+        $runtimeUserGrant
     )
 }
 

@@ -1136,6 +1136,12 @@ profile and the Python directory. The Python directory and executable receive
 the narrower read/execute grant described above; parent directories do not
 receive read, write, or list permission.
 
+Because the per-user runtime directory may have its inheritance removed during
+ACL repair, the installer also preserves the account that runs the install with
+explicit read/execute access to that runtime. This prevents the repair itself
+from making the selected `python.exe` unusable by the operator; it does not
+grant that account write access through this runtime ACL step.
+
 The service `binPath` contains only the selected Python executable and the
 managed `runner_heartbeat_service.py` launcher. It intentionally does not put
 `run --config` or any secret-derived value on the SCM command line. When SCM
