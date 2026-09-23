@@ -129,6 +129,13 @@ class RunnerWizardContractTests(unittest.TestCase):
                 )
         self.assertRegex(self.text, r"(?im)Install-RunnerObservabilityRunner\.ps1")
 
+    def test_child_runner_action_clears_stale_power_shell_exit_code(self) -> None:
+        invoke = self.text.split("function Invoke-RunnerScript {", 1)[1].split(
+            "function Invoke-RunnerWizardSmokeTest {", 1
+        )[0]
+        self.assertIn("$global:LASTEXITCODE = 0", invoke)
+        self.assertLess(invoke.index("$global:LASTEXITCODE = 0"), invoke.index("& $runnerScript"))
+
     def test_wizard_clears_only_owned_machine_environment_variables(self) -> None:
         for name in (
             "RUNNER_OBSERVABILITY_INSTALL_ROOT",

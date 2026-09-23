@@ -432,6 +432,11 @@ ready; the existing direct `Runner.Listener.exe` launch is reported as
 then run one real CI job and confirm the Dashboard shows the physical Runner
 as active.
 
+The wizard clears stale PowerShell child-process exit state before each
+delegated lifecycle action, so a successful `reason=uninstall_completed` or
+`reason=configure_completed` result is not misreported because of an earlier
+native command.
+
 The detailed blocks below remain the low-level fallback for troubleshooting or
 for machines whose paths differ from the standard conventions.
 

@@ -261,6 +261,10 @@ function Invoke-RunnerScript {
     if ($AllowInsecureHttp) {
         $arguments["AllowInsecureHttp"] = $true
     }
+    # A successful child script does not necessarily overwrite PowerShell's
+    # automatic LASTEXITCODE. Clear a stale value before invoking it so a
+    # completed uninstall/configure action cannot be reported as failed.
+    $global:LASTEXITCODE = 0
     & $runnerScript @arguments
     if ($LASTEXITCODE -ne 0) {
         throw (New-RunnerWizardError -Reason ("runner_action_failed_" + $Action.ToLowerInvariant()))
