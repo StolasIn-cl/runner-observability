@@ -128,6 +128,7 @@ class RunnerWizardContractTests(unittest.TestCase):
         self.assertIn("$versionOutput", resolver)
         self.assertIn("$versionExitCode", resolver)
         self.assertIn("python_execute_exit_code", resolver)
+        self.assertIn("-1073741790", resolver)
         self.assertIn("python_execute_access_denied", resolver)
         self.assertIn("win32serviceutil", resolver)
         self.assertIn("windows_service_runtime_unavailable", resolver)
