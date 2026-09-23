@@ -118,6 +118,25 @@ class HeartbeatTests(unittest.TestCase):
         config = self.config(endpoint="http://monitor.example.test:8765", allow_insecure_http=True)
         self.assertTrue(config.allow_insecure_http)
 
+    def test_canonical_event_endpoint_is_not_appended_twice(self) -> None:
+        endpoints: list[str] = []
+
+        def deliver(event: object, endpoint: str, _token: str) -> DeliveryResult:
+            endpoints.append(endpoint)
+            return DeliveryResult(True, 1)
+
+        loop = HeartbeatLoop(
+            self.config(endpoint="https://monitor.example.test:8765/v1/events"),
+            deliver=deliver,
+            network_probe=lambda _endpoint, _timeout: True,
+            diagnostic=lambda _message: None,
+        )
+
+        result = loop.emit_once()
+
+        self.assertTrue(result.delivered)
+        self.assertEqual(endpoints, ["https://monitor.example.test:8765/v1/events"])
+
     def test_scheduler_sends_immediately_then_every_sixty_seconds_without_delivery_drift(self) -> None:
         clock = FakeClock()
         stop = FakeStopEvent(clock, stop_after_waits=2)

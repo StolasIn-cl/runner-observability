@@ -696,6 +696,32 @@ class RunnerRoleScriptStaticContractTests(unittest.TestCase):
         self.assertIn("Read-Host -AsSecureString", (BOOTSTRAP_MODULE.read_text(encoding="utf-8")))
         self.assertIn("New-RunnerObservabilityTokenFile", self.script_text)
 
+    def test_runner_grants_token_access_to_the_direct_listener_account(self) -> None:
+        bootstrap = BOOTSTRAP_MODULE.read_text(encoding="utf-8")
+        heartbeat_service = (ROOT / "scripts" / "RunnerHeartbeat.Service.psm1").read_text(encoding="utf-8")
+
+        self.assertIn("function Resolve-RunnerAccount", self.script_text)
+        self.assertIn("GetOwner", self.script_text)
+        self.assertIn("runner_account_discovery_failed", self.script_text)
+        self.assertIn("AdditionalReadAccount", bootstrap)
+        self.assertIn("AdditionalReadAccount", heartbeat_service)
+        self.assertIn("-AdditionalReadAccount $RunnerAccount", self.script_text)
+        self.assertIn("Set-RunnerHeartbeatDirectoryTraverseAcl", self.script_text)
+        self.assertNotRegex(
+            (bootstrap + heartbeat_service),
+            r"(?i)Everyone:\(.*R",
+        )
+
+    def test_runner_permission_repair_canonicalizes_existing_ci_endpoint(self) -> None:
+        repair = self.script_text.split("function Invoke-RunnerRepairPermissions", 1)[1].split(
+            "function Invoke-RunnerLifecycle", 1
+        )[0]
+
+        self.assertIn("RUNNER_OBSERVABILITY_ENDPOINT", repair)
+        self.assertIn("Assert-RunnerEndpoint", repair)
+        self.assertIn("Write-RunnerHeartbeatConfigAtomic", repair)
+        self.assertIn("Set-RunnerObservabilityMachineEnvironment", repair)
+
     def test_docs_describe_monitor_then_runner_order(self) -> None:
         combined = (self.readme_text + "\n" + self.runbook_text).lower()
         for term in (

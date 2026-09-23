@@ -22,6 +22,7 @@ param(
     [string]$SourceRoot = "",
     [string]$InstallRoot = "C:\runner-observability-agent",
     [string]$SecretRoot = "C:\runner-observability-secrets",
+    [string]$RunnerAccount = "",
     [string]$ServiceName = "RunnerObservabilityHeartbeat",
     [string]$ServiceAccount = "NT AUTHORITY\LocalService",
     [ValidateSet("PublicCa", "PrivateCa", "SelfSigned", "Existing", "None")]
@@ -458,6 +459,7 @@ function Invoke-RunnerScript {
         CertificateTrustModel = $CertificateTrustModel
         MonitorCertificatePath = $certificatePath
         ExpectedCertificateSha256 = $ExpectedCertificateSha256
+        RunnerAccount = $RunnerAccount
         ServiceName = $ServiceName
         ServiceAccount = $ServiceAccount
     }

@@ -59,19 +59,24 @@ function Set-RunnerHeartbeatFileAcl {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$ServiceAccount,
+        [string]$AdditionalReadAccount = "",
         [ValidateSet("R", "M")][string]$Access = "R"
     )
 
     $serviceGrant = "{0}:({1})" -f $ServiceAccount, $Access
-    Invoke-RunnerHeartbeatNativeCommand -FilePath "icacls.exe" -ArgumentList @(
-        $Path,
-        "/inheritance:r",
-        "/grant:r",
+    $grants = @(
         "SYSTEM:(F)",
         "Administrators:(F)",
-        $serviceGrant,
-        "/c"
-    ) | Out-Null
+        $serviceGrant
+    )
+    if (-not [string]::IsNullOrWhiteSpace($AdditionalReadAccount) -and
+        ($AdditionalReadAccount -ine $ServiceAccount) -and
+        ($AdditionalReadAccount -ine "SYSTEM") -and
+        ($AdditionalReadAccount -ine "Administrators")) {
+        $grants += "{0}:(R)" -f $AdditionalReadAccount
+    }
+    $argumentList = @($Path, "/inheritance:r", "/grant:r") + $grants + @("/c")
+    Invoke-RunnerHeartbeatNativeCommand -FilePath "icacls.exe" -ArgumentList $argumentList | Out-Null
 }
 
 function Set-RunnerHeartbeatDirectoryAcl {
@@ -98,20 +103,27 @@ function Set-RunnerHeartbeatDirectoryTraverseAcl {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$ServiceAccount
+        [Parameter(Mandatory = $true)][string]$ServiceAccount,
+        [string]$AdditionalReadAccount = ""
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Container -ErrorAction Stop)) {
         throw [System.InvalidOperationException]::new("directory_acl_failed")
     }
     $serviceGrant = "{0}:(X)" -f $ServiceAccount
-    Invoke-RunnerHeartbeatNativeCommand -FilePath "icacls.exe" -ArgumentList @(
-        $Path,
-        "/grant:r",
+    $grants = @(
         "SYSTEM:(F)",
         "Administrators:(F)",
         $serviceGrant
-    ) | Out-Null
+    )
+    if (-not [string]::IsNullOrWhiteSpace($AdditionalReadAccount) -and
+        ($AdditionalReadAccount -ine $ServiceAccount) -and
+        ($AdditionalReadAccount -ine "SYSTEM") -and
+        ($AdditionalReadAccount -ine "Administrators")) {
+        $grants += "{0}:(X)" -f $AdditionalReadAccount
+    }
+    $argumentList = @($Path, "/grant:r") + $grants
+    Invoke-RunnerHeartbeatNativeCommand -FilePath "icacls.exe" -ArgumentList $argumentList | Out-Null
 }
 
 function Get-RunnerHeartbeatServiceRecord {

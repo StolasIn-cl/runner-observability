@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 from typing import Any, ClassVar
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 from .agent import DeliveryResult, deliver_event
@@ -24,6 +24,18 @@ from .credentials import CredentialFileError, read_token_file
 HEARTBEAT_EVENT_TYPE = "runner.heartbeat"
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60
 DEFAULT_NETWORK_POLL_SECONDS = 5
+
+
+def _canonical_event_endpoint(endpoint: str) -> str:
+    parsed = urlsplit(endpoint)
+    path = parsed.path.rstrip("/")
+    if path.casefold() in {"", "/"}:
+        path = "/v1/events"
+    elif path.casefold() == "/v1/events":
+        path = "/v1/events"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+
+
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 Clock = Callable[[], float]
@@ -318,11 +330,11 @@ class HeartbeatLoop:
         self._network_probe = network_probe
         self._diagnostic = _safe_diagnostic(diagnostic or (lambda _message: None))
         self._state: HeartbeatState | None = None
-        event_endpoint = config.endpoint.rstrip("/") + "/v1/events"
+        self._event_endpoint = _canonical_event_endpoint(config.endpoint)
         if deliver is None:
             self._deliver = lambda event, _endpoint, token: deliver_event(
                 event,
-                event_endpoint,
+                self._event_endpoint,
                 token,
                 clock=clock,
                 sleeper=sleeper,
@@ -349,7 +361,7 @@ class HeartbeatLoop:
             self._diagnostic(f"heartbeat_delivery_failed reason={error.reason}")
             return DeliveryResult(False, 0, error.reason)
         event = _heartbeat_event(self.config, self._state, sequence)
-        result = self._deliver(event, self.config.endpoint.rstrip("/") + "/v1/events", token)
+        result = self._deliver(event, self._event_endpoint, token)
         if not result.delivered:
             self._diagnostic(f"heartbeat_delivery_failed reason={result.reason or 'delivery_failed'}")
         return result

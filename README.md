@@ -136,6 +136,10 @@ git pull --ff-only origin codex/runner-observability
     -AllowHostsChange
 ```
 
+安裝會從唯一執行中的 `Runner.Listener.exe` 解析 direct Runner 帳號，並只授予
+該帳號讀取 token 的權限；若 listener 尚未啟動、同時有多個不同帳號，請明確傳入
+`-RunnerAccount 'DOMAIN\runner-user'`。不要改用 `Everyone` 或整個 Users 群組。
+
 腳本會自動尋找可用的 Python 3.11+ 與 Windows service runtime。若找不到，請
 先從公司核准來源安裝 Python/pywin32；不需要把固定的 Python path 寫進標準命令。
 
@@ -148,7 +152,9 @@ git pull --ff-only origin codex/runner-observability
    - `monitor.crt`
 4. 不要複製 `monitor.key`。
 5. 驗證 certificate fingerprint，輸入 `TRUST-CERTIFICATE`。
-6. 看到 `status=OK`、`heartbeat_service=Running` 後，依提示重啟實際的
+6. 安裝會同時設定 token 檔案的 direct Runner 帳號讀取權與 secrets 父目錄 traverse
+   權限；heartbeat service 仍使用 `NT AUTHORITY\LocalService`。
+7. 看到 `status=OK`、`heartbeat_service=Running` 後，依提示重啟實際的
    `Runner.Listener.exe`；輸出中的 `runner_listener_restart=manual_required`
    是預期結果。
 
@@ -206,6 +212,32 @@ sc.exe queryex RunnerObservabilityHeartbeat
 不要把 `Runner.Listener.exe` 當成這個 service。已知 Runner 啟動模式是直接執行
 listener；machine environment 第一次設定或變更後，才需要用實際 launch method
 手動重啟 listener，不需要整台 Windows reboot。
+
+若既有 Runner 仍收到 `token_read` 或 `UnauthorizedAccessException`，先以實際
+Runner 帳號（非提升權限的管理員 shell）做不回顯內容的讀取檢查，再執行修復：
+
+```powershell
+$tokenPath = 'C:\runner-observability-secrets\monitor-token.txt'
+$stream = $null
+try {
+    $stream = [IO.File]::OpenRead($tokenPath)
+    'runner_token_read=PASS'
+}
+catch {
+    'runner_token_read=FAIL error_type=' + $_.Exception.GetType().Name
+}
+finally {
+    if ($null -ne $stream) { $stream.Dispose() }
+}
+
+.\scripts\Install-RunnerObservabilityRunner.ps1 `
+    -Action RepairPermissions `
+    -RunnerAccount 'DOMAIN\runner-user'
+```
+
+`-RunnerAccount` 可省略以重新解析唯一執行中的 listener owner。修復後確認
+heartbeat config 的 endpoint 是 `https://<monitor-host>:8765/v1/events`；CI helper
+與 heartbeat 會使用同一個 ingest route，不會再產生 `/v1/events/v1/events` 或 base URL 404。
 
 ## 5. 完成驗證
 

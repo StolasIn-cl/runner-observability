@@ -112,6 +112,64 @@ function Assert-RunnerPython {
     }
 }
 
+function ConvertTo-RunnerAccountName {
+    param([Parameter(Mandatory = $true)][string]$Account)
+
+    if ([string]::IsNullOrWhiteSpace($Account)) {
+        throw (New-RunnerRoleError -Reason "runner_account_invalid")
+    }
+    try {
+        $ntAccount = [Security.Principal.NTAccount]::new($Account.Trim())
+        $sid = $ntAccount.Translate([Security.Principal.SecurityIdentifier])
+        return $sid.Translate([Security.Principal.NTAccount]).Value
+    }
+    catch {
+        throw (New-RunnerRoleError -Reason "runner_account_invalid")
+    }
+}
+
+function Resolve-RunnerAccount {
+    if (-not [string]::IsNullOrWhiteSpace($RunnerAccount)) {
+        $script:RunnerAccount = ConvertTo-RunnerAccountName -Account $RunnerAccount
+        return $script:RunnerAccount
+    }
+
+    $processes = @()
+    try {
+        $processes = @(Get-CimInstance Win32_Process -Filter "Name = 'Runner.Listener.exe'" -ErrorAction Stop)
+    }
+    catch {
+        throw (New-RunnerRoleError -Reason "runner_account_discovery_failed")
+    }
+
+    $owners = [System.Collections.Generic.List[string]]::new()
+    foreach ($process in $processes) {
+        try {
+            $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwner -ErrorAction Stop
+            if (($owner.ReturnValue -eq 0) -and
+                (-not [string]::IsNullOrWhiteSpace([string]$owner.User))) {
+                $ownerName = if ([string]::IsNullOrWhiteSpace([string]$owner.Domain)) {
+                    [string]$owner.User
+                }
+                else {
+                    "{0}\{1}" -f $owner.Domain, $owner.User
+                }
+                $owners.Add((ConvertTo-RunnerAccountName -Account $ownerName))
+            }
+        }
+        catch {
+            continue
+        }
+    }
+
+    $uniqueOwners = @($owners | Sort-Object -Unique)
+    if ($uniqueOwners.Count -ne 1) {
+        throw (New-RunnerRoleError -Reason "runner_account_discovery_failed")
+    }
+    $script:RunnerAccount = [string]$uniqueOwners[0]
+    return $script:RunnerAccount
+}
+
 function Assert-RunnerEndpoint {
     if ([string]::IsNullOrWhiteSpace($Endpoint)) {
         throw (New-RunnerRoleError -Reason "endpoint_required")
@@ -136,9 +194,42 @@ function Assert-RunnerEndpoint {
         ($uri.AbsolutePath -notin @("", "/", "/v1/events"))) {
         throw (New-RunnerRoleError -Reason "endpoint_path_invalid")
     }
-    if ($uri.AbsolutePath -ieq "/v1/events") {
-        $script:Endpoint = $uri.GetLeftPart([System.UriPartial]::Authority)
+    $path = $uri.AbsolutePath.TrimEnd("/")
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        $path = "/v1/events"
     }
+    elseif ($path -ieq "/v1/events") {
+        $path = "/v1/events"
+    }
+    else {
+        throw (New-RunnerRoleError -Reason "endpoint_path_invalid")
+    }
+    $script:Endpoint = $uri.GetLeftPart([System.UriPartial]::Authority) + $path
+}
+
+function Resolve-RunnerEndpointForRepair {
+    if (-not [string]::IsNullOrWhiteSpace($Endpoint)) {
+        return
+    }
+
+    $existingEndpoint = [Environment]::GetEnvironmentVariable(
+        "RUNNER_OBSERVABILITY_ENDPOINT",
+        "Machine"
+    )
+    if ([string]::IsNullOrWhiteSpace($existingEndpoint) -and
+        (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        try {
+            $existingConfig = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop | ConvertFrom-Json
+            $existingEndpoint = [string]$existingConfig.endpoint
+        }
+        catch {
+            throw (New-RunnerRoleError -Reason "service_config_write_failed")
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($existingEndpoint)) {
+        throw (New-RunnerRoleError -Reason "endpoint_required")
+    }
+    $script:Endpoint = $existingEndpoint
 }
 
 function Assert-RunnerMonitorAddress {
@@ -205,10 +296,17 @@ function Ensure-RunnerToken {
         throw (New-RunnerRoleError -Reason "monitor_key_not_allowed")
     }
     if (Test-Path -LiteralPath $TokenPath -PathType Leaf) {
-        Set-RunnerObservabilityFileAcl -Path $TokenPath -ServiceAccount $ServiceAccount
+        Set-RunnerObservabilityFileAcl `
+            -Path $TokenPath `
+            -ServiceAccount $ServiceAccount `
+            -AdditionalReadAccount $RunnerAccount
         return
     }
-    New-RunnerObservabilityTokenFile -Path $TokenPath -ServiceAccount $ServiceAccount -PromptForToken | Out-Null
+    New-RunnerObservabilityTokenFile `
+        -Path $TokenPath `
+        -ServiceAccount $ServiceAccount `
+        -AdditionalReadAccount $RunnerAccount `
+        -PromptForToken | Out-Null
 }
 
 function Get-NormalizedSha256 {
@@ -309,6 +407,7 @@ function Invoke-RunnerPreflight {
     $result = Get-RunnerInstallInspection
     $releaseSource = Get-RunnerReleaseSource -Inspection $result.Inspection
     Assert-RunnerPython
+    $runnerAccountValue = Resolve-RunnerAccount
     Assert-RunnerEndpoint
     Assert-RunnerMonitorAddress
     Assert-RunnerCertificate
@@ -319,6 +418,7 @@ function Invoke-RunnerPreflight {
     [pscustomobject]@{
         InstallState = $result.Inspection.ReleaseState
         PythonPath = $PythonPath
+        RunnerAccount = $runnerAccountValue
         Endpoint = $Endpoint
         MonitorHost = $MonitorHost
         CertificateTrustModel = $CertificateTrustModel
@@ -356,7 +456,8 @@ function Invoke-RunnerConfigure {
     New-Item -ItemType Directory -Path (Split-Path -Parent $StatePath) -Force | Out-Null
     Set-RunnerHeartbeatDirectoryTraverseAcl `
         -Path (Split-Path -Parent $TokenPath) `
-        -ServiceAccount $ServiceAccount
+        -ServiceAccount $ServiceAccount `
+        -AdditionalReadAccount $RunnerAccount
     $runnerIdValue = Ensure-RunnerId
     Ensure-RunnerToken
     Import-RunnerMonitorCertificate
@@ -366,7 +467,11 @@ function Invoke-RunnerConfigure {
     $configuration = New-RunnerHeartbeatConfiguration -RunnerIdValue $runnerIdValue
     Write-RunnerHeartbeatConfigAtomic -Path $configPath -Configuration $configuration
     Set-RunnerHeartbeatFileAcl -Path $configPath -ServiceAccount $ServiceAccount -Access "R"
-    Set-RunnerHeartbeatFileAcl -Path $TokenPath -ServiceAccount $ServiceAccount -Access "R"
+    Set-RunnerHeartbeatFileAcl `
+        -Path $TokenPath `
+        -ServiceAccount $ServiceAccount `
+        -AdditionalReadAccount $RunnerAccount `
+        -Access "R"
     Set-RunnerHeartbeatFileAcl -Path $RunnerId -ServiceAccount $ServiceAccount -Access "R"
     Set-RunnerHeartbeatDirectoryAcl -Path (Split-Path -Parent $StatePath) -ServiceAccount $ServiceAccount
     $pythonDirectory = Split-Path -Parent $PythonPath
@@ -398,14 +503,44 @@ function Invoke-RunnerConfigure {
 function Invoke-RunnerRepairPermissions {
     $null = Get-RunnerInstallInspection
     Assert-RunnerPython
+    $runnerAccountValue = Resolve-RunnerAccount
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         throw (New-RunnerRoleError -Reason "runner_installation_missing")
     }
     if (-not (Test-Path -LiteralPath $TokenPath -PathType Leaf)) {
         throw (New-RunnerRoleError -Reason "token_file_missing")
     }
+    Resolve-RunnerEndpointForRepair
+    Assert-RunnerEndpoint
     Set-RunnerHeartbeatFileAcl -Path $configPath -ServiceAccount $ServiceAccount -Access "R"
-    Set-RunnerHeartbeatFileAcl -Path $TokenPath -ServiceAccount $ServiceAccount -Access "R"
+    try {
+        $existingConfig = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($null -eq $existingConfig) {
+            throw [System.InvalidOperationException]::new("service_config_invalid")
+        }
+        $configuration = @{}
+        foreach ($property in $existingConfig.PSObject.Properties) {
+            $configuration[$property.Name] = $property.Value
+        }
+        $configuration["endpoint"] = $Endpoint
+        Write-RunnerHeartbeatConfigAtomic -Path $configPath -Configuration $configuration
+    }
+    catch {
+        if ($_.Exception.Message -eq "service_config_write_failed") {
+            throw
+        }
+        throw (New-RunnerRoleError -Reason "service_config_write_failed")
+    }
+    Set-RunnerHeartbeatFileAcl -Path $configPath -ServiceAccount $ServiceAccount -Access "R"
+    Set-RunnerHeartbeatDirectoryTraverseAcl `
+        -Path (Split-Path -Parent $TokenPath) `
+        -ServiceAccount $ServiceAccount `
+        -AdditionalReadAccount $runnerAccountValue
+    Set-RunnerHeartbeatFileAcl `
+        -Path $TokenPath `
+        -ServiceAccount $ServiceAccount `
+        -AdditionalReadAccount $runnerAccountValue `
+        -Access "R"
     if (Test-Path -LiteralPath $RunnerId -PathType Leaf) {
         Set-RunnerHeartbeatFileAcl -Path $RunnerId -ServiceAccount $ServiceAccount -Access "R"
     }
@@ -414,6 +549,9 @@ function Invoke-RunnerRepairPermissions {
     Set-RunnerObservabilityRuntimeParentTraverseAcl -Path $PythonPath -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityRuntimeFileAcl -Path $PythonPath -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityRuntimeAcl -Path $pythonDirectory -ServiceAccount $ServiceAccount
+    Set-RunnerObservabilityMachineEnvironment `
+        -Values @{ RUNNER_OBSERVABILITY_ENDPOINT = $Endpoint } `
+        -AllowMachineEnvironmentChange | Out-Null
     Write-Output "reason=permissions_repaired"
 }
 
@@ -486,6 +624,9 @@ catch {
         "service_state_read_failed",
         "service_command_failed",
         "runner_installation_missing",
+        "runner_account_required",
+        "runner_account_invalid",
+        "runner_account_discovery_failed",
         "file_acl_failed",
         "directory_acl_failed",
         "runtime_path_missing",

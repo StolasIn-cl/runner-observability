@@ -273,19 +273,22 @@ Run the Runner entry point after substituting the confirmed Monitor address:
 ```powershell
 $python = 'C:\Python311\python.exe'
 $installRoot = 'C:\runner-observability-agent'
-$endpoint = 'https://monitor-test.local:8765'
+$endpoint = 'https://monitor-test.local:8765/v1/events'
 $token = 'C:\runner-observability-secrets\monitor-token.txt'
 $monitorIp = '192.0.2.20' # replace with the confirmed Monitor IPv4 address
+$runnerAccount = '' # optional; use DOMAIN\runner-user if listener is stopped
 
 .\scripts\Install-RunnerObservabilityRunner.ps1 `
     -Action Preflight -PythonPath $python -InstallRoot $installRoot `
     -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
-    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
+    -MonitorIp $monitorIp -CertificateTrustModel PublicCa `
+    -RunnerAccount $runnerAccount
 
 .\scripts\Install-RunnerObservabilityRunner.ps1 `
     -Action Configure -PythonPath $python -InstallRoot $installRoot `
     -Endpoint $endpoint -TokenPath $token -MonitorHost 'monitor-test.local' `
-    -MonitorIp $monitorIp -CertificateTrustModel PublicCa
+    -MonitorIp $monitorIp -CertificateTrustModel PublicCa `
+    -RunnerAccount $runnerAccount
 ```
 
 For `PrivateCa` or `SelfSigned`, pass only the public certificate and the
@@ -293,14 +296,18 @@ operator-confirmed SHA-256 fingerprint; `-ImportCertificate` verifies that
 fingerprint before touching the Windows trust store. `-AllowHostsChange` is a
 separate explicit gate and preserves unrelated hosts entries. If the token
 file is absent, `Configure` prompts using `Read-Host -AsSecureString` and
-creates an ACL-protected file. The token value is never a parameter or
-service argument, and `monitor.key` is rejected on a Runner.
+creates an ACL-protected file. The file grants read access to the exact direct
+`Runner.Listener.exe` account in addition to `NT AUTHORITY\LocalService`; its
+parent directory grants traverse access to both identities. The token value is
+never a parameter or service argument, and `monitor.key` is rejected on a
+Runner. The installer rejects an ambiguous listener-owner lookup instead of
+falling back to a broad account or `Everyone`.
 
 Use the Runner entry point for lifecycle and repair actions. The uninstall
 action removes only the named Heartbeat service and preserves persistent data:
 
 ```powershell
-.\scripts\Install-RunnerObservabilityRunner.ps1 -Action RepairPermissions -InstallRoot $installRoot -TokenPath $token
+.\scripts\Install-RunnerObservabilityRunner.ps1 -Action RepairPermissions -InstallRoot $installRoot -TokenPath $token -RunnerAccount $runnerAccount
 .\scripts\Install-RunnerObservabilityRunner.ps1 -Action Status -ServiceName 'RunnerObservabilityHeartbeat'
 .\scripts\Install-RunnerObservabilityRunner.ps1 -Action Start -ServiceName 'RunnerObservabilityHeartbeat'
 .\scripts\Install-RunnerObservabilityRunner.ps1 -Action Stop -ServiceName 'RunnerObservabilityHeartbeat'
@@ -518,9 +525,12 @@ state, and evidence files for operator cleanup.
 
 Local tests cover state isolation, atomic persistence, drift-free scheduling,
 network-ready startup, bounded delivery, fail-open diagnostics, configuration
-redaction, and SCM/script shape. They do not claim that a real Runner reboot,
-Windows SCM status, certificate trust, ACL, reconnect, or Monitor restart was
-observed. Those timestamped facts remain issue #6's HITL evidence boundary.
+redaction, endpoint canonicalization, direct Runner-account ACL intent, and
+SCM/script shape. They do not claim that a real Runner reboot, Windows SCM
+status, certificate trust, ACL, reconnect, or Monitor restart was observed.
+Those timestamped facts remain issue #6's HITL evidence boundary. After
+`Configure` or `RepairPermissions`, run the token read check as the actual
+Runner account without printing the token contents.
 
 ## Runner canary script (issue #6, using issue #7 HTTPS)
 

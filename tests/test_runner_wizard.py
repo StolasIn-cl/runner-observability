@@ -51,6 +51,7 @@ class RunnerWizardContractTests(unittest.TestCase):
             "MonitorHost",
             "InstallRoot",
             "SecretRoot",
+            "RunnerAccount",
             "SourceRoot",
             "CertificateTrustModel",
             "WhatIf",
@@ -58,6 +59,9 @@ class RunnerWizardContractTests(unittest.TestCase):
         ):
             with self.subTest(parameter=parameter):
                 self.assertRegex(self.text, rf"(?im)\$[{{(]?{parameter}\b")
+
+    def test_wizard_forwards_the_explicit_runner_account_to_the_role_installer(self) -> None:
+        self.assertIn("RunnerAccount = $RunnerAccount", self.text)
 
     def test_inventory_is_the_first_operational_step_and_clean_reset_is_gated(self) -> None:
         operational_body = self.text.split("function Invoke-RunnerWizard {", 1)[1]

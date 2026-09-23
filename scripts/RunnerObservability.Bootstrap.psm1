@@ -295,19 +295,27 @@ function Set-RunnerObservabilityFileAcl {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$ServiceAccount
+        [Parameter(Mandatory = $true)][string]$ServiceAccount,
+        [string]$AdditionalReadAccount = ""
     )
 
     $serviceGrant = "{0}:(R)" -f $ServiceAccount
-    Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "file_acl_failed" -ArgumentList @(
-        $Path,
-        "/inheritance:r",
-        "/grant:r",
+    $grants = @(
         "SYSTEM:(F)",
         "Administrators:(F)",
-        $serviceGrant,
-        "/c"
+        $serviceGrant
     )
+    if (-not [string]::IsNullOrWhiteSpace($AdditionalReadAccount) -and
+        ($AdditionalReadAccount -ine $ServiceAccount) -and
+        ($AdditionalReadAccount -ine "SYSTEM") -and
+        ($AdditionalReadAccount -ine "Administrators")) {
+        $grants += "{0}:(R)" -f $AdditionalReadAccount
+    }
+    $argumentList = @($Path, "/inheritance:r", "/grant:r") + $grants + @("/c")
+    Invoke-RunnerObservabilityBootstrapNativeCommand `
+        -FilePath "icacls.exe" `
+        -FailureReason "file_acl_failed" `
+        -ArgumentList $argumentList
 }
 
 function Set-RunnerObservabilityDirectoryAcl {
@@ -477,6 +485,7 @@ function New-RunnerObservabilityTokenFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$ServiceAccount,
+        [string]$AdditionalReadAccount = "",
         [switch]$PromptForToken
     )
 
@@ -516,7 +525,10 @@ function New-RunnerObservabilityTokenFile {
         $temporaryPath = Join-Path $parent ("." + (Split-Path -Leaf $Path) + "." + [guid]::NewGuid().ToString("N") + ".tmp")
         [IO.File]::WriteAllBytes($temporaryPath, [byte[]]@())
         $phase = "acl"
-        Set-RunnerObservabilityFileAcl -Path $temporaryPath -ServiceAccount $ServiceAccount
+        Set-RunnerObservabilityFileAcl `
+            -Path $temporaryPath `
+            -ServiceAccount $ServiceAccount `
+            -AdditionalReadAccount $AdditionalReadAccount
         $phase = "write"
         [IO.File]::WriteAllText($temporaryPath, $tokenValue, [Text.UTF8Encoding]::new($false))
         $phase = "activate"
