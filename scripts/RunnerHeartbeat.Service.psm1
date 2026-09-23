@@ -243,7 +243,12 @@ function Register-RunnerHeartbeatService {
     if (-not (Test-Path -LiteralPath $launcherPath -PathType Leaf)) {
         throw [System.InvalidOperationException]::new("runtime_path_missing")
     }
-    $binPath = '"{0}" "{1}" run --config "{2}"' -f $PythonPath, $launcherPath, $ConfigPath
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        throw [System.InvalidOperationException]::new("service_config_missing")
+    }
+    # Keep SCM argv bare.  The managed launcher derives the config path from
+    # its release location before invoking the application parser.
+    $binPath = '"{0}" "{1}"' -f $PythonPath, $launcherPath
     Invoke-RunnerHeartbeatNativeCommand -FilePath "sc.exe" -ArgumentList @(
         "create", $ServiceName, "binPath=", $binPath, "start=", "auto", "DisplayName=", "Runner Observability Heartbeat"
     ) | Out-Null

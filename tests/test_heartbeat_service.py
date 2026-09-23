@@ -88,7 +88,7 @@ class HeartbeatServiceTests(unittest.TestCase):
         self.assertEqual(loaded, config)
         self.assertNotIn("token-value", serialized)
 
-    def test_service_command_contains_only_config_path(self) -> None:
+    def test_service_command_contains_only_runtime_paths(self) -> None:
         command = build_heartbeat_service_bin_path(
             "C:/secure/heartbeat-config.json",
             "C:/Python/python.exe",
@@ -97,7 +97,9 @@ class HeartbeatServiceTests(unittest.TestCase):
 
         self.assertIn("runner_heartbeat_service.py", command)
         self.assertIn("releases\\1.0.0\\src", command)
-        self.assertIn("heartbeat-config.json", command)
+        self.assertNotIn("heartbeat-config.json", command)
+        self.assertNotIn(" --config ", command)
+        self.assertNotIn(" run ", command)
         self.assertNotIn("--token", command)
         self.assertNotIn("secret-token", command)
 
@@ -106,6 +108,15 @@ class HeartbeatServiceTests(unittest.TestCase):
 
         self.assertTrue(launcher.is_file())
         self.assertIn("runner_observability.heartbeat_service", launcher.read_text(encoding="utf-8"))
+
+    def test_service_launcher_derives_config_for_a_bare_scm_command(self) -> None:
+        launcher = ROOT / "src" / "runner_heartbeat_service.py"
+        source = launcher.read_text(encoding="utf-8")
+
+        self.assertIn("sys.argv", source)
+        self.assertIn("parents[3]", source)
+        self.assertIn('"heartbeat-config.json"', source)
+        self.assertIn('"run", "--config"', source)
 
     def test_non_windows_host_reports_stable_unavailable_reason(self) -> None:
         with tempfile.TemporaryDirectory(prefix="runner-heartbeat-config-") as directory:
@@ -201,10 +212,12 @@ class HeartbeatServiceTests(unittest.TestCase):
         remove_function = module[module.index("function Remove-RunnerHeartbeatService") :]
         self.assertIn('-DesiredState "Absent"', remove_function)
 
-    def test_service_command_remains_config_path_only(self) -> None:
+    def test_service_command_does_not_put_config_arguments_in_scm_binpath(self) -> None:
         source = MODULE.read_text(encoding="utf-8")
         self.assertIn("runner_heartbeat_service.py", source)
         self.assertIn("$ModulePath", source)
+        self.assertIn('$binPath = \'"{0}" "{1}"\' -f $PythonPath, $launcherPath', source)
+        self.assertNotIn('run --config', source)
         self.assertNotIn("--token ", source)
         self.assertNotIn("--endpoint ", source)
 

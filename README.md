@@ -1078,8 +1078,9 @@ Prefer a machine-scoped Python runtime or virtual environment under a managed
 path such as `C:\runner-observability-agent\venv`. The runtime, its package
 files, and every parent directory needed to reach them must be readable and
 executable by `LocalService`. The heartbeat install script grants the service
-account access to the config, token, and state paths; it does not grant access
-to a per-user Python installation.
+account access to the config, token, and state paths. When a confirmed
+per-user Python runtime is used, it also grants only the exact parent-chain
+traverse and runtime read/execute permissions described below.
 
 The token directory receives only traverse (`X`) access for `LocalService`,
 while `monitor-token.txt` receives read (`R`) access. The service account does
@@ -1134,6 +1135,13 @@ account only traverse `(X)` on each exact parent directory between the user
 profile and the Python directory. The Python directory and executable receive
 the narrower read/execute grant described above; parent directories do not
 receive read, write, or list permission.
+
+The service `binPath` contains only the selected Python executable and the
+managed `runner_heartbeat_service.py` launcher. It intentionally does not put
+`run --config` or any secret-derived value on the SCM command line. When SCM
+starts the launcher without arguments, the launcher resolves
+`<InstallRoot>\heartbeat-config.json` from its managed release layout and
+enters the pywin32 service host.
 
 The `Configure` action registers the service but does not start it. Start and
 verify it explicitly with the Runner entry point:

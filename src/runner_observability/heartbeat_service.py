@@ -21,15 +21,19 @@ def build_heartbeat_service_bin_path(
     python_executable: Path | str,
     module_path: Path | str,
 ) -> str:
-    """Build an SCM command rooted at the managed release source directory."""
+    """Build an SCM command rooted at the managed release source directory.
+
+    ``config_path`` remains part of this function's contract for callers that
+    already provide the complete service configuration, but it is deliberately
+    not placed in the SCM command line.  The managed launcher derives it from
+    its own release path so SCM starts the pywin32 host with a bare argv.
+    """
+    del config_path
     launcher_path = Path(module_path) / "runner_heartbeat_service.py"
     return subprocess.list2cmdline(
         [
             str(python_executable),
             str(launcher_path),
-            "run",
-            "--config",
-            str(config_path),
         ]
     )
 
