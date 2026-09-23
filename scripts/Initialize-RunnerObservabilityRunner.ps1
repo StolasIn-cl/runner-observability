@@ -48,6 +48,7 @@ $tokenPath = Join-Path $SecretRoot "monitor-token.txt"
 $certificatePath = Join-Path $SecretRoot "monitor.crt"
 $privateKeyPath = Join-Path $SecretRoot "monitor.key"
 $hostsPath = Join-Path $env:SystemRoot "System32\drivers\etc\hosts"
+$script:ImportCertificate = $false
 
 function New-RunnerWizardError {
     param([Parameter(Mandatory = $true)][string]$Reason)

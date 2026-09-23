@@ -152,6 +152,9 @@ class RunnerWizardContractTests(unittest.TestCase):
         self.assertIn("candidate.VersionSupported", resolver)
         self.assertIn("python_candidate_access_denied", resolver)
 
+    def test_clean_rebuild_initializes_optional_certificate_import_state(self) -> None:
+        self.assertRegex(self.text, r"(?im)^\s*\$script:ImportCertificate\s*=\s*\$false\s*$")
+
     def test_wizard_delegates_lifecycle_to_existing_runner_installer(self) -> None:
         for action in ("Uninstall", "Preflight", "Configure", "Start"):
             with self.subTest(action=action):
