@@ -94,6 +94,26 @@ function Set-RunnerHeartbeatDirectoryAcl {
     ) | Out-Null
 }
 
+function Set-RunnerHeartbeatDirectoryTraverseAcl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceAccount
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container -ErrorAction Stop)) {
+        throw [System.InvalidOperationException]::new("directory_acl_failed")
+    }
+    $serviceGrant = "{0}:(X)" -f $ServiceAccount
+    Invoke-RunnerHeartbeatNativeCommand -FilePath "icacls.exe" -ArgumentList @(
+        $Path,
+        "/grant:r",
+        "SYSTEM:(F)",
+        "Administrators:(F)",
+        $serviceGrant
+    ) | Out-Null
+}
+
 function Get-RunnerHeartbeatServiceRecord {
     [CmdletBinding()]
     param(
@@ -293,6 +313,7 @@ Export-ModuleMember -Function @(
     "Write-RunnerHeartbeatConfigAtomic",
     "Set-RunnerHeartbeatFileAcl",
     "Set-RunnerHeartbeatDirectoryAcl",
+    "Set-RunnerHeartbeatDirectoryTraverseAcl",
     "Assert-RunnerHeartbeatServiceAbsent",
     "Wait-RunnerHeartbeatServiceState",
     "Register-RunnerHeartbeatService",

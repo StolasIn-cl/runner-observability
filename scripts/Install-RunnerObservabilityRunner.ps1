@@ -354,6 +354,9 @@ function Invoke-RunnerConfigure {
     }
     New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
     New-Item -ItemType Directory -Path (Split-Path -Parent $StatePath) -Force | Out-Null
+    Set-RunnerHeartbeatDirectoryTraverseAcl `
+        -Path (Split-Path -Parent $TokenPath) `
+        -ServiceAccount $ServiceAccount
     $runnerIdValue = Ensure-RunnerId
     Ensure-RunnerToken
     Import-RunnerMonitorCertificate
@@ -367,10 +370,14 @@ function Invoke-RunnerConfigure {
     Set-RunnerHeartbeatFileAcl -Path $RunnerId -ServiceAccount $ServiceAccount -Access "R"
     Set-RunnerHeartbeatDirectoryAcl -Path (Split-Path -Parent $StatePath) -ServiceAccount $ServiceAccount
     $pythonDirectory = Split-Path -Parent $PythonPath
+    Set-RunnerObservabilityRuntimeFileAcl -Path $PythonPath -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityRuntimeAcl -Path $pythonDirectory -ServiceAccount $ServiceAccount
     if ($null -ne $result.Inspection.Revision) {
         $releaseSource = Join-Path (Join-Path (Join-Path $InstallRoot "releases") $result.Inspection.Revision) "src"
         if (Test-Path -LiteralPath $releaseSource -PathType Container) {
+            Set-RunnerObservabilityRuntimeFileAcl `
+                -Path (Join-Path $releaseSource "runner_heartbeat_service.py") `
+                -ServiceAccount $ServiceAccount
             Set-RunnerObservabilityRuntimeAcl -Path $releaseSource -ServiceAccount $ServiceAccount
         }
     }
@@ -476,6 +483,7 @@ catch {
         "file_acl_failed",
         "directory_acl_failed",
         "runtime_path_missing",
+        "runtime_acl_failed",
         "hosts_change_not_allowed",
         "hosts_mapping_conflict",
         "hosts_write_failed",

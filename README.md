@@ -1038,6 +1038,21 @@ executable by `LocalService`. The heartbeat install script grants the service
 account access to the config, token, and state paths; it does not grant access
 to a per-user Python installation.
 
+The token directory receives only traverse (`X`) access for `LocalService`,
+while `monitor-token.txt` receives read (`R`) access. The service account does
+not receive write access to the secrets directory and never receives access to
+`monitor.key`.
+
+During `Configure`, the Runner installer also grants and verifies read/execute
+access on the exact Python executable and the managed
+`runner_heartbeat_service.py` launcher. This exact-file check is intentional:
+`icacls /T /C` can continue after an individual protected file fails, which
+would otherwise leave service registration looking successful until `sc.exe
+start` returns `Access is denied`. A failure is reported as
+`runtime_acl_failed`; stop and repair or replace the confirmed Python runtime
+before retrying. Do not grant `LocalService` write or full-control access to
+the Python installation.
+
 If a per-user Python runtime is used temporarily, verify the exact service
 binary path and package location before changing ACLs. Grant only traverse
 access on the confirmed parent directories and read/execute access on the

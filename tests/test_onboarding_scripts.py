@@ -61,6 +61,7 @@ class BootstrapModuleStaticContractTests(unittest.TestCase):
             "Set-RunnerObservabilityFileAcl",
             "Set-RunnerObservabilityDirectoryAcl",
             "Set-RunnerObservabilityRuntimeAcl",
+            "Set-RunnerObservabilityRuntimeFileAcl",
             "Set-RunnerObservabilityHostsMapping",
             "Set-RunnerObservabilityMachineEnvironment",
             "Wait-RunnerObservabilityServiceState",
@@ -129,6 +130,17 @@ class BootstrapModuleStaticContractTests(unittest.TestCase):
         self.assertLess(
             runtime_acl.index('"/inheritance:r"'), runtime_acl.index("$serviceGrant,")
         )
+
+    def test_runtime_acl_checks_native_recursive_failures_and_exact_files(self) -> None:
+        self.assertIn("Failed processing", self.module_text)
+        self.assertIn("Access is denied", self.module_text)
+        self.assertIn("function Set-RunnerObservabilityRuntimeFileAcl", self.module_text)
+
+        runner = RUNNER_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("Set-RunnerObservabilityRuntimeFileAcl -Path $PythonPath", runner)
+        self.assertGreaterEqual(runner.count("Set-RunnerObservabilityRuntimeFileAcl"), 2)
+        self.assertIn("Join-Path $releaseSource", runner)
+        self.assertIn("Set-RunnerHeartbeatDirectoryTraverseAcl", runner)
 
     def test_machine_environment_and_hosts_changes_have_explicit_contracts(self) -> None:
         self.assertRegex(

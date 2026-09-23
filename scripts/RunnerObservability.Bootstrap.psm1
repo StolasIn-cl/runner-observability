@@ -31,8 +31,13 @@ function Invoke-RunnerObservabilityBootstrapNativeCommand {
     )
 
     try {
-        & $FilePath @ArgumentList 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
+        $output = @(& $FilePath @ArgumentList 2>&1)
+        $outputText = ($output | ForEach-Object { [string]$_ }) -join "`n"
+        $icaclsFailure = (
+            ([IO.Path]::GetFileName($FilePath) -ieq "icacls.exe") -and
+            ($outputText -match "(?i)(Access is denied|Failed processing\s+[1-9]|cannot find the file)")
+        )
+        if (($LASTEXITCODE -ne 0) -or $icaclsFailure) {
             throw (New-RunnerObservabilityStableError -Reason $FailureReason)
         }
     }
@@ -351,6 +356,34 @@ function Set-RunnerObservabilityRuntimeAcl {
         $serviceGrant,
         "/t",
         "/c"
+    )
+}
+
+function Set-RunnerObservabilityRuntimeFileAcl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceAccount
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf -ErrorAction Stop)) {
+            throw (New-RunnerObservabilityStableError -Reason "runtime_path_missing")
+        }
+    }
+    catch {
+        if ($_.Exception.Message -eq "runtime_path_missing") {
+            throw
+        }
+        throw (New-RunnerObservabilityStableError -Reason "runtime_acl_failed")
+    }
+    $serviceGrant = "{0}:(RX)" -f $ServiceAccount
+    Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_acl_failed" -ArgumentList @(
+        $Path,
+        "/grant:r",
+        "SYSTEM:(F)",
+        "Administrators:(F)",
+        $serviceGrant
     )
 }
 
@@ -674,6 +707,7 @@ Export-ModuleMember -Function @(
     "Set-RunnerObservabilityFileAcl",
     "Set-RunnerObservabilityDirectoryAcl",
     "Set-RunnerObservabilityRuntimeAcl",
+    "Set-RunnerObservabilityRuntimeFileAcl",
     "Test-RunnerObservabilityMonitorIp",
     "Set-RunnerObservabilityHostsMapping",
     "Set-RunnerObservabilityMachineEnvironment",
