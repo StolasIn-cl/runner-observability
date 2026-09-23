@@ -235,6 +235,45 @@ function Clear-RunnerWizardMachineEnvironment {
     }
 }
 
+function Remove-RunnerWizardInstallRoot {
+    if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) {
+        return
+    }
+    try {
+        $item = Get-Item -LiteralPath $InstallRoot -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw (New-RunnerWizardError -Reason "install_root_reparse_point")
+        }
+        Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop
+    }
+    catch {
+        if ($_.Exception.Message -eq "install_root_reparse_point") {
+            throw
+        }
+        Write-Output "reset_acl_repair=install_root"
+        try {
+            & takeown.exe /f $InstallRoot /r /d Y 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw (New-RunnerWizardError -Reason "reset_install_root_cleanup_failed")
+            }
+            & icacls.exe $InstallRoot /grant:r "Administrators:(OI)(CI)(F)" /t /c 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw (New-RunnerWizardError -Reason "reset_install_root_cleanup_failed")
+            }
+            Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction Stop
+        }
+        catch {
+            if ($_.Exception.Message -eq "reset_install_root_cleanup_failed") {
+                throw
+            }
+            throw (New-RunnerWizardError -Reason "reset_install_root_cleanup_failed")
+        }
+    }
+    if (Test-Path -LiteralPath $InstallRoot) {
+        throw (New-RunnerWizardError -Reason "reset_install_root_cleanup_failed")
+    }
+}
+
 function Invoke-RunnerScript {
     param([Parameter(Mandatory = $true)][ValidateSet("Uninstall", "Preflight", "Configure", "Start")][string]$Action)
 
@@ -400,9 +439,7 @@ function Invoke-RunnerWizard {
     }
 
     Invoke-RunnerScript -Action "Uninstall"
-    if (Test-Path -LiteralPath $InstallRoot) {
-        Remove-Item -LiteralPath $InstallRoot -Recurse -Force
-    }
+    Remove-RunnerWizardInstallRoot
     foreach ($path in @($tokenPath, $certificatePath)) {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             Remove-Item -LiteralPath $path -Force

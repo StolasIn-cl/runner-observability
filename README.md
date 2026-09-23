@@ -415,6 +415,12 @@ changing the Runner. The wizard performs the following sequence:
 7. current-HEAD release staging, import smoke test, Runner `Preflight`,
    `Configure`, and Heartbeat `Start`.
 
+If deletion of the confirmed managed install root is blocked by ACLs left by a
+previous service/runtime attempt, the wizard repairs ownership and grants
+Administrators full control on that exact install root only, then retries the
+delete. It refuses reparse-point install roots and never applies this repair to
+`C:\actions-runner`, the source checkout, or the secrets directory.
+
 The wizard never copies files between hosts, reads or prints the token,
 accepts `monitor.key`, removes `C:\actions-runner`, unregisters the GitHub
 Actions Runner, or deletes the source checkout. For a self-signed/private-CA

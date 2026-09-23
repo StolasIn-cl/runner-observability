@@ -136,6 +136,17 @@ class RunnerWizardContractTests(unittest.TestCase):
         self.assertIn("$global:LASTEXITCODE = 0", invoke)
         self.assertLess(invoke.index("$global:LASTEXITCODE = 0"), invoke.index("& $runnerScript"))
 
+    def test_clean_reset_repairs_only_managed_install_root_acl_after_delete_denial(self) -> None:
+        self.assertIn("function Remove-RunnerWizardInstallRoot", self.text)
+        cleanup = self.text.split("function Remove-RunnerWizardInstallRoot", 1)[1].split(
+            "function Invoke-RunnerWizardSmokeTest", 1
+        )[0]
+        self.assertIn("takeown.exe", cleanup)
+        self.assertIn("icacls.exe", cleanup)
+        self.assertIn("reset_install_root_cleanup_failed", cleanup)
+        wizard = self.text.split("function Invoke-RunnerWizard {", 1)[1]
+        self.assertIn("Remove-RunnerWizardInstallRoot", wizard)
+
     def test_wizard_clears_only_owned_machine_environment_variables(self) -> None:
         for name in (
             "RUNNER_OBSERVABILITY_INSTALL_ROOT",
