@@ -160,10 +160,23 @@ function Get-RunnerObservabilityInventory {
 
     $secretFiles = foreach ($root in $CandidateSecretRoots) {
         foreach ($name in @("monitor-token.txt", "monitor.crt", "monitor.key")) {
+            $path = Join-Path $root $name
+            $exists = $false
+            $accessDenied = $false
+            try {
+                $exists = Test-Path -LiteralPath $path -PathType Leaf -ErrorAction Stop
+            }
+            catch [System.UnauthorizedAccessException] {
+                $accessDenied = $true
+            }
+            catch {
+                throw (New-RunnerObservabilityStableError -Reason "secret_inventory_failed")
+            }
             [pscustomobject]@{
                 Root = $root
                 Name = $name
-                Exists = (Test-Path -LiteralPath (Join-Path $root $name) -PathType Leaf)
+                Exists = $exists
+                AccessDenied = $accessDenied
             }
         }
     }

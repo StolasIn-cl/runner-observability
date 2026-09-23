@@ -9,6 +9,7 @@ import unittest
 
 ROOT = Path(__file__).parents[1]
 WIZARD = ROOT / "scripts" / "Initialize-RunnerObservabilityRunner.ps1"
+BOOTSTRAP = ROOT / "scripts" / "RunnerObservability.Bootstrap.psm1"
 POWERSHELL = "powershell.exe"
 
 
@@ -36,6 +37,7 @@ class RunnerWizardContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.text = WIZARD.read_text(encoding="utf-8") if WIZARD.is_file() else ""
+        cls.bootstrap_text = BOOTSTRAP.read_text(encoding="utf-8") if BOOTSTRAP.is_file() else ""
 
     def test_wizard_exists_and_has_explicit_clean_rebuild_entrypoint(self) -> None:
         self.assertTrue(WIZARD.is_file())
@@ -84,6 +86,14 @@ class RunnerWizardContractTests(unittest.TestCase):
         self.assertRegex(self.text, r"(?im)IsInRole")
         self.assertIn('New-RunnerWizardError -Reason "administrator_required"', self.text)
         self.assertIn('New-RunnerWizardError -Reason "secret_inventory_access_denied"', self.text)
+
+    def test_secret_inventory_converts_access_denied_into_metadata(self) -> None:
+        self.assertRegex(self.bootstrap_text, r"(?im)AccessDenied\s*=")
+        self.assertRegex(
+            self.bootstrap_text,
+            r"(?is)SecretFiles.+?Test-Path.+?-ErrorAction\s+Stop.+?AccessDenied",
+        )
+        self.assertRegex(self.text, r"(?im)SecretFiles\s*\|\s*Where-Object.+AccessDenied")
 
     def test_secret_gate_requires_token_and_certificate_without_printing_contents(self) -> None:
         self.assertIn("monitor-token.txt", self.text)

@@ -299,7 +299,20 @@ function Invoke-RunnerWizard {
             -CandidateSecretRoots @($SecretRoot) `
             -ServiceNamePatterns @("*action*", "*runner*", "*observability*", "*promeo*", $ServiceName)
     }
-    catch [System.UnauthorizedAccessException] {
+    catch {
+        $errorRecord = $_
+        $accessDenied = ($errorRecord.Exception -is [System.UnauthorizedAccessException]) -or
+            ($errorRecord.FullyQualifiedErrorId -match "(?i)UnauthorizedAccess|PermissionDenied")
+        if (-not $accessDenied -and ($null -ne $errorRecord.Exception.InnerException)) {
+            $accessDenied = $errorRecord.Exception.InnerException -is [System.UnauthorizedAccessException]
+        }
+        if ($accessDenied) {
+            throw (New-RunnerWizardError -Reason "secret_inventory_access_denied")
+        }
+        throw
+    }
+    $secretAccessDenied = @($inventory.SecretFiles | Where-Object { $_.AccessDenied })
+    if ($secretAccessDenied.Count -gt 0) {
         throw (New-RunnerWizardError -Reason "secret_inventory_access_denied")
     }
     $initialInspection = Assert-RunnerObservabilityInventoryGate `
