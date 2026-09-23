@@ -31,6 +31,7 @@ param(
     [string]$ServiceName = "RunnerObservabilityMonitor",
     [string]$ServiceAccount = "NT AUTHORITY\LocalService",
     [switch]$AllowDevSelfSigned,
+    [switch]$TrustSelfSignedCertificate,
     [switch]$WhatIf
 )
 
@@ -384,6 +385,9 @@ function Test-MonitorPathPair {
 }
 
 function Assert-MonitorCertificateConfiguration {
+    if ($TrustSelfSignedCertificate -and ($CertificateMode -ne "SelfSigned")) {
+        throw (New-MonitorStableError -Reason "certificate_trust_requires_self_signed")
+    }
     switch ($CertificateMode) {
         "SelfSigned" {
             if (-not $AllowDevSelfSigned) {
@@ -398,6 +402,31 @@ function Assert-MonitorCertificateConfiguration {
         "Existing" { Test-MonitorPathPair }
         default { throw (New-MonitorStableError -Reason "unsupported_certificate_mode") }
     }
+}
+
+function Import-MonitorSelfSignedCertificate {
+    if (-not $TrustSelfSignedCertificate) {
+        return
+    }
+    if ($CertificateMode -ne "SelfSigned") {
+        throw (New-MonitorStableError -Reason "certificate_trust_requires_self_signed")
+    }
+    if (-not (Test-Path -LiteralPath $TlsCertPath -PathType Leaf)) {
+        throw (New-MonitorStableError -Reason "certificate_trust_import_failed")
+    }
+    try {
+        # This is an explicit development/test opt-in. Import only the public
+        # certificate into the interactive install user's trust store; the
+        # private key never leaves the protected secret directory.
+        Import-Certificate `
+            -FilePath $TlsCertPath `
+            -CertStoreLocation "Cert:\CurrentUser\Root" `
+            -ErrorAction Stop | Out-Null
+    }
+    catch {
+        throw (New-MonitorStableError -Reason "certificate_trust_import_failed")
+    }
+    Write-Output "certificate_trust=CurrentUserRoot"
 }
 
 function Invoke-MonitorInventory {
@@ -520,6 +549,7 @@ function Invoke-MonitorInstall {
     $certificateMetadata = $null
     if ($CertificateMode -eq "SelfSigned") {
         $certificateMetadata = New-MonitorSelfSignedCertificate -CertificatePath $TlsCertPath -PrivateKeyPath $TlsKeyPath
+        Import-MonitorSelfSignedCertificate
     }
     else {
         Test-MonitorPathPair
@@ -625,6 +655,8 @@ catch {
         "certificate_files_exist",
         "certificate_file_write_failed",
         "certificate_key_pair_missing",
+        "certificate_trust_import_failed",
+        "certificate_trust_requires_self_signed",
         "service_config_write_failed",
         "self_signed_not_allowed",
         "unsupported_certificate_mode",

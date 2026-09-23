@@ -365,6 +365,7 @@ class MonitorRoleScriptStaticContractTests(unittest.TestCase):
             "ServiceName",
             "ServiceAccount",
             "AllowDevSelfSigned",
+            "TrustSelfSignedCertificate",
             "WhatIf",
         ):
             with self.subTest(parameter=parameter):
@@ -424,6 +425,31 @@ class MonitorRoleScriptStaticContractTests(unittest.TestCase):
             self.script_text.index("Set-RunnerObservabilityFileAcl -Path $temporaryPath"),
             self.script_text.index("WriteAllText($temporaryPath"),
         )
+
+    def test_monitor_self_signed_trust_is_explicit_and_runs_after_generation(self) -> None:
+        self.assertIn("TrustSelfSignedCertificate", self.script_text)
+        self.assertIn("Import-Certificate", self.script_text)
+        self.assertIn('Cert:\\CurrentUser\\Root', self.script_text)
+        self.assertIn('certificate_trust_import_failed', self.script_text)
+        install = self.script_text[
+            self.script_text.index("function Invoke-MonitorInstall") :
+            self.script_text.index("function Invoke-MonitorRepairPermissions")
+        ]
+        self.assertLess(
+            install.index("New-MonitorSelfSignedCertificate"),
+            install.index("Import-MonitorSelfSignedCertificate"),
+        )
+
+    def test_monitor_docs_describe_browser_trust_for_clean_self_signed_install(self) -> None:
+        combined = (self.readme_text + "\n" + self.runbook_text).lower()
+        for term in (
+            "-trustselfsignedcertificate",
+            "currentuser\\root",
+            "https://monitor-test.local:8765/",
+            "certificate trust",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, combined)
 
     def test_monitor_self_signed_preflight_supports_windows_powershell_crypto_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -173,8 +173,19 @@ is never copied to a Runner.
     -Action Install -PythonPath $python -ConfigPath $config `
     -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
     -TlsCertPath $cert -TlsKeyPath $key -CertificateMode SelfSigned `
-    -AllowDevSelfSigned -RunnerAddress $runnerIp
+    -AllowDevSelfSigned -TrustSelfSignedCertificate `
+    -RunnerAddress $runnerIp
 ```
+
+`-TrustSelfSignedCertificate` is an explicit clean-install development/test
+option. It imports only the generated public `monitor.crt` into
+`Cert:\CurrentUser\Root`, so a browser running as the installing user can
+trust the Dashboard certificate. It never imports or copies `monitor.key`.
+Without this switch, the self-signed certificate is still generated and used
+for HTTPS, but browsers will show a trust warning by design. Open the
+Dashboard at `https://monitor-test.local:8765/`; the hostname must resolve to
+the Monitor Host before opening the page. The switch is intentionally limited
+to `SelfSigned` installs and is not a repair action for an existing install.
 
 The token is generated into an atomically activated, ACL-protected file when
 it is absent. It is never accepted as a parameter or placed in the service

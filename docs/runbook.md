@@ -102,8 +102,18 @@ is available. It does not start the service after that failure.
     -Action Install -PythonPath $python -ConfigPath $config `
     -DatabasePath $database -SecretRoot $secretRoot -TokenPath $token `
     -TlsCertPath $cert -TlsKeyPath $key -CertificateMode SelfSigned `
-    -AllowDevSelfSigned -RunnerAddress $runnerIp
+    -AllowDevSelfSigned -TrustSelfSignedCertificate `
+    -RunnerAddress $runnerIp
 ```
+
+For a clean development/test Monitor install, `-TrustSelfSignedCertificate`
+imports only the generated public certificate into
+`Cert:\CurrentUser\Root` for the installing user. It does not copy or import
+`monitor.key`, and it is not an existing-install repair action. Confirm that
+`monitor-test.local` resolves to the Monitor Host, then open the Dashboard at
+`https://monitor-test.local:8765/`. Omitting the switch preserves the secure
+default of not changing the Windows trust store and leaves the browser warning
+expected for a self-signed certificate.
 
 The Monitor script generates the token when absent and writes it atomically
 with restrictive ACLs. A token value is never a parameter, command-line

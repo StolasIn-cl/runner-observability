@@ -64,12 +64,20 @@ Remove-Item -LiteralPath 'C:\runner-observability-secrets\monitor-token.txt','C:
   -DatabasePath 'C:\runner-observability-data\monitor.sqlite' `
   -SecretRoot 'C:\runner-observability-secrets' `
   -CertificateMode SelfSigned -AllowDevSelfSigned `
+  -TrustSelfSignedCertificate `
   -RunnerAddress '192.168.24.78','192.168.24.46'
 .\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Start -ServiceName 'RunnerObservabilityMonitor'
 .\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Status -ServiceName 'RunnerObservabilityMonitor'
 Get-NetTCPConnection -LocalPort 8765 -State Listen
 curl.exe -k -i https://127.0.0.1:8765/api/health
 ```
+
+For the browser check, confirm `monitor-test.local` resolves to this Monitor
+Host and open `https://monitor-test.local:8765/`. The install switch imports
+the generated public certificate into the installing user's
+`Cert:\CurrentUser\Root`; it never imports `monitor.key`. The `curl.exe -k`
+form remains useful for a PowerShell 5.1 health check because it does not rely
+on browser trust.
 
 The `curl.exe -k` form works in Windows PowerShell 5.1 for this local
 self-signed health check. PowerShell 7 may alternatively use
