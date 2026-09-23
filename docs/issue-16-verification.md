@@ -6,7 +6,7 @@ are recorded.
 
 ## Local verification
 
-- Targeted onboarding/service suite: 74 tests passed.
+- Targeted onboarding/service suite: 75 tests passed.
 - PowerShell parser: Monitor, Runner, shared Bootstrap, Monitor service, and
   Heartbeat service scripts all parsed successfully.
 - Monitor `Preflight` was executed on `STOLASIN-DT2` with the inventory-confirmed
@@ -22,7 +22,7 @@ are recorded.
   mutation could not be executed by this session. Run the live block below
   from an elevated PowerShell prompt on the Monitor Host.
 
-## Live acceptance attempt
+## Live acceptance attempts
 
 - The operator successfully removed the named Monitor service and the three
   requested secret files, then attempted a clean `SelfSigned` install.
@@ -33,6 +33,11 @@ are recorded.
 - The implementation now encodes PKCS#8 from exportable RSA parameters and has
   a Windows PKI fallback for older hosts. Re-run the live block after pulling
   this change; do not reuse the removed secret files.
+- A subsequent live attempt generated all three secret files but returned the
+  generic `monitor_onboarding_failed`; the existing `service-config.json` was
+  unchanged, and neither the Firewall rule nor Service was registered. The
+  installer now maps `service_config_write_failed` explicitly and repairs the
+  ACL of a preserved config before the atomic reinstall write.
 
 ## Known baseline
 

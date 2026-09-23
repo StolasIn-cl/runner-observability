@@ -540,6 +540,16 @@ $metadata = New-MonitorSelfSignedCertificate `
         )
         self.assertIn("preserve", self.lowered)
 
+    def test_monitor_reinstall_repairs_existing_config_before_atomic_replace(self) -> None:
+        self.assertIn('"service_config_write_failed"', self.script_text)
+        install = self.script_text[
+            self.script_text.index("function Invoke-MonitorInstall") :
+            self.script_text.index("function Invoke-MonitorRepairPermissions")
+        ]
+        repair_config_acl = install.index("Set-RunnerObservabilityFileAcl -Path $ConfigPath")
+        config_write = install.index("Write-RunnerObservabilityConfigAtomic")
+        self.assertLess(repair_config_acl, config_write)
+
     def test_docs_describe_monitor_first_order_and_certificate_fallback(self) -> None:
         combined = (self.readme_text + "\n" + self.runbook_text).lower()
         for term in (

@@ -527,6 +527,11 @@ function Invoke-MonitorInstall {
         Set-RunnerObservabilityFileAcl -Path $TlsKeyPath -ServiceAccount $ServiceAccount
     }
 
+    if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
+        # Uninstall preserves persistent data. Repair the existing config ACL
+        # before File.Replace needs delete/write access during reinstall.
+        Set-RunnerObservabilityFileAcl -Path $ConfigPath -ServiceAccount $ServiceAccount
+    }
     Write-RunnerObservabilityConfigAtomic -Path $ConfigPath -Configuration (New-MonitorConfiguration)
     Set-RunnerObservabilityFileAcl -Path $ConfigPath -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityDirectoryAcl -Path (Split-Path -Parent $DatabasePath) -ServiceAccount $ServiceAccount
@@ -620,6 +625,7 @@ catch {
         "certificate_files_exist",
         "certificate_file_write_failed",
         "certificate_key_pair_missing",
+        "service_config_write_failed",
         "self_signed_not_allowed",
         "unsupported_certificate_mode",
         "runner_address_required",
