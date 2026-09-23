@@ -108,51 +108,174 @@ function Assert-RunnerWizardOwnedPaths {
     }
 }
 
-function Resolve-RunnerWizardPython {
-    if ([string]::IsNullOrWhiteSpace($PythonPath)) {
-        $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-        if ($null -eq $pythonCommand) {
-            throw (New-RunnerWizardError -Reason "python_not_found")
+function Get-RunnerWizardPythonCandidates {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $addCandidate = {
+        param([AllowNull()][string]$Candidate)
+
+        if ([string]::IsNullOrWhiteSpace($Candidate)) {
+            return
         }
-        $script:PythonPath = $pythonCommand.Source
+        $normalized = $Candidate.Trim().Trim('"')
+        if (-not [string]::IsNullOrWhiteSpace($normalized) -and
+            -not @($candidates | Where-Object { $_ -ieq $normalized })) {
+            [void]$candidates.Add($normalized)
+        }
     }
-    if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
-        throw (New-RunnerWizardError -Reason "python_not_found")
+
+    if (-not [string]::IsNullOrWhiteSpace($PythonPath)) {
+        & $addCandidate $PythonPath
+        return @($candidates)
     }
-    Write-Output ("python_path={0}" -f $PythonPath)
+
+    foreach ($commandName in @("python.exe", "python")) {
+        foreach ($command in @(Get-Command $commandName -All -ErrorAction SilentlyContinue | Where-Object { $_.CommandType -eq "Application" })) {
+            & $addCandidate ([string]$command.Source)
+        }
+    }
+
+    $launcher = Get-Command "py.exe" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandType -eq "Application" } |
+        Select-Object -First 1
+    if ($null -ne $launcher) {
+        $launcherOutput = @(& $launcher.Source -0p 2>$null)
+        foreach ($line in $launcherOutput) {
+            $lineText = [string]$line
+            if ($lineText -match '(?<path>[A-Za-z]:\\.*\\python(?:\.exe)?)\s*$') {
+                & $addCandidate $Matches.path
+            }
+        }
+    }
+
+    return @($candidates)
+}
+
+function Test-RunnerWizardPythonCandidate {
+    param([Parameter(Mandatory = $true)][string]$CandidatePath)
+
+    $result = [ordered]@{
+        Path = $CandidatePath
+        Version = ""
+        VersionSupported = $false
+        ServiceRuntimeAvailable = $false
+        Status = "unknown"
+        ExitCode = $null
+    }
+    if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
+        $result.Status = "not_found"
+        return [pscustomobject]$result
+    }
+
     try {
-        $versionOutput = @(& $PythonPath -s --version 2>&1)
+        $versionOutput = @(& $CandidatePath -s --version 2>&1)
         $versionExitCode = $LASTEXITCODE
         $versionText = [string]($versionOutput -join [Environment]::NewLine)
-        if (($versionExitCode -eq -1073741790) -or ($versionText -match "(?i)Access is denied")) {
-            throw (New-RunnerWizardError -Reason "python_execute_access_denied")
-        }
-        if ($versionExitCode -ne 0) {
-            Write-Output ("python_execute_exit_code={0}" -f $versionExitCode)
-            throw (New-RunnerWizardError -Reason "python_execute_failed")
-        }
     }
     catch {
-        if ($_.Exception.Message -match "(?i)Access is denied") {
-            throw (New-RunnerWizardError -Reason "python_execute_access_denied")
-        }
-        if ($_.Exception.Message -eq "python_execute_failed") {
-            throw
-        }
-        throw (New-RunnerWizardError -Reason "python_execute_failed")
+        $versionExitCode = -1
+        $versionText = [string]$_.Exception.Message
     }
+    $result.ExitCode = $versionExitCode
+    if (($versionExitCode -eq -1073741790) -or ($versionText -match "(?i)Access is denied")) {
+        $result.Status = "access_denied"
+        return [pscustomobject]$result
+    }
+    if ($versionExitCode -ne 0) {
+        $result.Status = "execute_failed"
+        return [pscustomobject]$result
+    }
+    if ($versionText -notmatch '(?i)Python\s+(?<version>\d+\.\d+\.\d+)') {
+        $result.Status = "version_invalid"
+        return [pscustomobject]$result
+    }
+    $result.Version = $Matches.version
+    $version = [version]$Matches.version
+    $result.VersionSupported = (($version.Major -gt 3) -or (($version.Major -eq 3) -and ($version.Minor -ge 11)))
+    if (-not $result.VersionSupported) {
+        $result.Status = "version_unsupported"
+        return [pscustomobject]$result
+    }
+
     try {
-        & $PythonPath -s -c "import servicemanager, win32event, win32service, win32serviceutil" 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw (New-RunnerWizardError -Reason "windows_service_runtime_unavailable")
-        }
+        $serviceRuntimeOutput = @(& $CandidatePath -s -c "import servicemanager, win32event, win32service, win32serviceutil" 2>&1)
+        $serviceRuntimeExitCode = $LASTEXITCODE
+        $serviceRuntimeText = [string]($serviceRuntimeOutput -join [Environment]::NewLine)
     }
     catch {
-        if ($_.Exception.Message -eq "windows_service_runtime_unavailable") {
-            throw
+        $serviceRuntimeExitCode = -1
+        $serviceRuntimeText = [string]$_.Exception.Message
+    }
+    if (($serviceRuntimeExitCode -eq -1073741790) -or ($serviceRuntimeText -match "(?i)Access is denied")) {
+        $result.Status = "access_denied"
+        return [pscustomobject]$result
+    }
+    if ($serviceRuntimeExitCode -ne 0) {
+        $result.Status = "service_runtime_unavailable"
+        return [pscustomobject]$result
+    }
+    $result.ServiceRuntimeAvailable = $true
+    $result.Status = "usable"
+    return [pscustomobject]$result
+}
+
+function Resolve-RunnerWizardPython {
+    $candidatePaths = @(Get-RunnerWizardPythonCandidates)
+    if ($candidatePaths.Count -eq 0) {
+        Write-Output "python_install_hint=Install Python 3.11 or newer from the approved software channel, then rerun this wizard"
+        throw (New-RunnerWizardError -Reason "python_not_found")
+    }
+
+    $supportedVersionFound = $false
+    $serviceRuntimeMissing = $false
+    $serviceRuntimeCandidatePaths = [System.Collections.Generic.List[string]]::new()
+    $accessDeniedCount = 0
+    $executeFailureCount = 0
+    foreach ($candidatePath in $candidatePaths) {
+        $candidate = Test-RunnerWizardPythonCandidate -CandidatePath $candidatePath
+        if ($candidate.VersionSupported) {
+            $supportedVersionFound = $true
         }
+        if ($candidate.ServiceRuntimeAvailable -and $candidate.VersionSupported) {
+            $script:PythonPath = $candidate.Path
+            Write-Output ("python_path={0}" -f $candidate.Path)
+            Write-Output ("python_version={0}" -f $candidate.Version)
+            return
+        }
+        switch ($candidate.Status) {
+            "access_denied" {
+                $accessDeniedCount += 1
+                Write-Output ("python_candidate_access_denied={0}" -f $candidate.Path)
+            }
+            "execute_failed" {
+                $executeFailureCount += 1
+                Write-Output ("python_execute_exit_code={0}" -f $candidate.ExitCode)
+            }
+            "service_runtime_unavailable" {
+                $serviceRuntimeMissing = $true
+                if ($candidate.VersionSupported) {
+                    [void]$serviceRuntimeCandidatePaths.Add($candidate.Path)
+                }
+            }
+        }
+    }
+
+    if ($serviceRuntimeMissing -and $supportedVersionFound) {
+        $runtimePath = $serviceRuntimeCandidatePaths[0]
+        Write-Output ("python_service_runtime_path={0}" -f $runtimePath)
+        Write-Output ("python_service_runtime_hint=Run `"{0}`" -m pip install --upgrade --no-user 'pywin32>=306', then rerun this wizard" -f $runtimePath)
         throw (New-RunnerWizardError -Reason "windows_service_runtime_unavailable")
     }
+    if (($accessDeniedCount -eq $candidatePaths.Count) -and ($accessDeniedCount -gt 0)) {
+        throw (New-RunnerWizardError -Reason "python_execute_access_denied")
+    }
+    if (-not $supportedVersionFound) {
+        Write-Output "python_install_hint=Install Python 3.11 or newer from the approved software channel, then rerun this wizard"
+        throw (New-RunnerWizardError -Reason "python_version_unsupported")
+    }
+    if ($executeFailureCount -gt 0) {
+        throw (New-RunnerWizardError -Reason "python_execute_failed")
+    }
+    throw (New-RunnerWizardError -Reason "windows_service_runtime_unavailable")
 }
 
 function Get-RunnerWizardCertificateSha256 {

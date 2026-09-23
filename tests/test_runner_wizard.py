@@ -121,7 +121,7 @@ class RunnerWizardContractTests(unittest.TestCase):
         self.assertNotIn("d3d73b5", self.text)
 
     def test_python_runtime_is_executed_before_clean_reset(self) -> None:
-        resolver = self.text.split("function Resolve-RunnerWizardPython", 1)[1].split(
+        resolver = self.text.split("function Test-RunnerWizardPythonCandidate", 1)[1].split(
             "function Get-RunnerWizardCertificateSha256", 1
         )[0]
         self.assertIn("--version", resolver)
@@ -134,6 +134,23 @@ class RunnerWizardContractTests(unittest.TestCase):
         self.assertIn("windows_service_runtime_unavailable", resolver)
         wizard = self.text.split("function Invoke-RunnerWizard {", 1)[1]
         self.assertLess(wizard.index("Resolve-RunnerWizardPython"), wizard.index('Invoke-RunnerScript -Action "Uninstall"'))
+
+    def test_python_runtime_is_discovered_without_a_machine_specific_path(self) -> None:
+        self.assertIn("function Get-RunnerWizardPythonCandidates", self.text)
+        self.assertIn("Get-Command $commandName -All", self.text)
+        self.assertIn("py.exe", self.text)
+        self.assertIn("-0p", self.text)
+        self.assertIn("python_version_unsupported", self.text)
+        self.assertIn("python_install_hint", self.text)
+        self.assertIn("python_service_runtime_hint", self.text)
+
+    def test_python_discovery_checks_version_and_service_runtime_per_candidate(self) -> None:
+        resolver = self.text.split("function Resolve-RunnerWizardPython", 1)[1].split(
+            "function Get-RunnerWizardCertificateSha256", 1
+        )[0]
+        self.assertIn("candidate.ServiceRuntimeAvailable", resolver)
+        self.assertIn("candidate.VersionSupported", resolver)
+        self.assertIn("python_candidate_access_denied", resolver)
 
     def test_wizard_delegates_lifecycle_to_existing_runner_installer(self) -> None:
         for action in ("Uninstall", "Preflight", "Configure", "Start"):

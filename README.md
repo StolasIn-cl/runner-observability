@@ -398,34 +398,48 @@ the latest script, update it first with the repository's normal
     -CertificateTrustModel SelfSigned -AllowHostsChange
 ```
 
-The wizard prints the selected `python_path` and executes `python --version`
-before the reset confirmation. A failed preflight also prints the native exit
-code. If it reports `python_execute_access_denied`, do not repeat the reset
-with the same runtime. Use `-PythonPath` with an inventory-confirmed
-executable that the interactive user can run and that can also be granted
-read/execute access for the configured Heartbeat service account, for example:
+The wizard does not hard-code a Python path. On each target it discovers
+candidate runtimes from `python.exe` on `PATH` and the Python launcher
+(`py.exe -0p`), then checks every candidate before the reset confirmation:
+
+1. the executable can run `--version`;
+2. the version is Python 3.11 or newer; and
+3. the same executable can import `servicemanager`, `win32event`,
+   `win32service`, and `win32serviceutil`.
+
+It prints the selected `python_path` and `python_version` only after a usable
+runtime is found. Do not copy a Python path from another Runner or put a
+machine-specific path in `CONTEXT.md` or a standard runbook command.
+
+If no Python 3.11+ runtime is found, the wizard prints `python_install_hint`
+and stops before reset. Install Python through the approved software channel,
+then rerun the wizard. The wizard intentionally does not download and execute
+an unverified installer automatically; that would require a trusted source,
+hash/signature verification, proxy handling, and separate installation
+authority on each machine.
+
+If a supported Python is found but pywin32 is missing, the wizard prints the
+exact selected `python_service_runtime_path` and a command for installing the
+dependency into that runtime:
 
 ```powershell
-.\scripts\Initialize-RunnerObservabilityRunner.ps1 `
-    -CleanRebuild -PythonPath 'C:\path\to\approved\python.exe' `
-    -MonitorIp '192.168.24.141' `
-    -CertificateTrustModel SelfSigned -AllowHostsChange
-```
-
-The wizard does not silently switch to a per-user Python installation because
-the Heartbeat service runs as `NT AUTHORITY\LocalService`; a runtime that works
-for the interactive user can still be inaccessible to the service account.
-The selected runtime must also contain the optional Windows-service dependency.
-If the wizard reports `windows_service_runtime_unavailable`, install it into
-the selected inventory-confirmed runtime from an elevated PowerShell, then
-rerun the wizard:
-
-```powershell
-$python = 'C:\path\to\approved\python.exe'
+$python = 'C:\path\printed\by\the\wizard\python.exe'
 & $python -m pip install --upgrade --no-user 'pywin32>=306'
 & $python -s -c "import servicemanager, win32event, win32service, win32serviceutil"
 if ($LASTEXITCODE -ne 0) { throw 'pywin32 installation verification failed' }
 ```
+
+If every discovered candidate is blocked by Windows, the wizard reports
+`python_execute_access_denied` and stops before reset. Resolve the runtime ACL
+or Windows application-control policy first. The advanced `-PythonPath`
+override remains available for troubleshooting an already inventory-confirmed
+runtime, but it is not part of the normal clean-rebuild flow.
+
+The Heartbeat service still runs as `NT AUTHORITY\LocalService`; therefore a
+runtime that works for the interactive user must also be readable and
+executable by that service account. The configure/repair step applies the
+minimal parent traverse and runtime read/execute ACLs after the Python
+preflight succeeds.
 
 Omit `-MonitorIp` to have the wizard ask for the confirmed Monitor IPv4
 address. Run `-WhatIf` first if you want to inspect the planned flow without
@@ -985,7 +999,9 @@ The endpoint must contain the real Monitor host and use `/v1/events` when it
 is passed to this entry point. `Preflight` is read-only. `Configure` then
 atomically writes the Heartbeat config, applies the service/token/state ACLs,
 persists the machine environment values, and registers the service stopped;
-it does not start the service.
+it does not start the service. This is the lower-level manual installer; the
+one-command clean-rebuild wizard discovers Python automatically and passes the
+selected path internally.
 
 ```powershell
 $python = 'C:\Python311\python.exe' # inventory-confirmed Python
