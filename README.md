@@ -1129,6 +1129,12 @@ icacls.exe $pythonRoot /grant ("{0}:(OI)(CI)(RX)" -f $localService) /T /C
 if ($LASTEXITCODE -ne 0) { throw "Failed to grant Python runtime access: $pythonRoot" }
 ```
 
+For a per-user Python runtime, the Runner installer also grants the Heartbeat
+account only traverse `(X)` on each exact parent directory between the user
+profile and the Python directory. The Python directory and executable receive
+the narrower read/execute grant described above; parent directories do not
+receive read, write, or list permission.
+
 The `Configure` action registers the service but does not start it. Start and
 verify it explicitly with the Runner entry point:
 

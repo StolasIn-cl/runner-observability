@@ -62,6 +62,7 @@ class BootstrapModuleStaticContractTests(unittest.TestCase):
             "Set-RunnerObservabilityDirectoryAcl",
             "Set-RunnerObservabilityRuntimeAcl",
             "Set-RunnerObservabilityRuntimeFileAcl",
+            "Set-RunnerObservabilityRuntimeParentTraverseAcl",
             "Set-RunnerObservabilityHostsMapping",
             "Set-RunnerObservabilityMachineEnvironment",
             "Wait-RunnerObservabilityServiceState",
@@ -141,6 +142,18 @@ class BootstrapModuleStaticContractTests(unittest.TestCase):
         self.assertGreaterEqual(runner.count("Set-RunnerObservabilityRuntimeFileAcl"), 2)
         self.assertIn("Join-Path $releaseSource", runner)
         self.assertIn("Set-RunnerHeartbeatDirectoryTraverseAcl", runner)
+
+    def test_per_user_runtime_grants_only_parent_traverse_access(self) -> None:
+        self.assertIn("function Set-RunnerObservabilityRuntimeParentTraverseAcl", self.module_text)
+        traverse = self.module_text.split(
+            "function Set-RunnerObservabilityRuntimeParentTraverseAcl", 1
+        )[1].split("function Set-RunnerObservabilityRuntimeFileAcl", 1)[0]
+        self.assertIn("Split-Path -Parent", traverse)
+        self.assertIn("(X)", traverse)
+        self.assertIn("runtime_parent_acl_failed", traverse)
+
+        runner = RUNNER_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("Set-RunnerObservabilityRuntimeParentTraverseAcl", runner)
 
     def test_machine_environment_and_hosts_changes_have_explicit_contracts(self) -> None:
         self.assertRegex(

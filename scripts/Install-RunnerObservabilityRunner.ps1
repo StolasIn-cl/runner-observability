@@ -370,6 +370,7 @@ function Invoke-RunnerConfigure {
     Set-RunnerHeartbeatFileAcl -Path $RunnerId -ServiceAccount $ServiceAccount -Access "R"
     Set-RunnerHeartbeatDirectoryAcl -Path (Split-Path -Parent $StatePath) -ServiceAccount $ServiceAccount
     $pythonDirectory = Split-Path -Parent $PythonPath
+    Set-RunnerObservabilityRuntimeParentTraverseAcl -Path $PythonPath -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityRuntimeFileAcl -Path $PythonPath -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityRuntimeAcl -Path $pythonDirectory -ServiceAccount $ServiceAccount
     if ($null -ne $result.Inspection.Revision) {
@@ -396,6 +397,7 @@ function Invoke-RunnerConfigure {
 
 function Invoke-RunnerRepairPermissions {
     $null = Get-RunnerInstallInspection
+    Assert-RunnerPython
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         throw (New-RunnerRoleError -Reason "runner_installation_missing")
     }
@@ -408,6 +410,10 @@ function Invoke-RunnerRepairPermissions {
         Set-RunnerHeartbeatFileAcl -Path $RunnerId -ServiceAccount $ServiceAccount -Access "R"
     }
     Set-RunnerHeartbeatDirectoryAcl -Path (Split-Path -Parent $StatePath) -ServiceAccount $ServiceAccount
+    $pythonDirectory = Split-Path -Parent $PythonPath
+    Set-RunnerObservabilityRuntimeParentTraverseAcl -Path $PythonPath -ServiceAccount $ServiceAccount
+    Set-RunnerObservabilityRuntimeFileAcl -Path $PythonPath -ServiceAccount $ServiceAccount
+    Set-RunnerObservabilityRuntimeAcl -Path $pythonDirectory -ServiceAccount $ServiceAccount
     Write-Output "reason=permissions_repaired"
 }
 
@@ -484,6 +490,7 @@ catch {
         "directory_acl_failed",
         "runtime_path_missing",
         "runtime_acl_failed",
+        "runtime_parent_acl_failed",
         "hosts_change_not_allowed",
         "hosts_mapping_conflict",
         "hosts_write_failed",

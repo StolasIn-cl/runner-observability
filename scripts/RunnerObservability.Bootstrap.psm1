@@ -359,6 +359,38 @@ function Set-RunnerObservabilityRuntimeAcl {
     )
 }
 
+function Set-RunnerObservabilityRuntimeParentTraverseAcl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceAccount
+    )
+
+    $runtimeDirectory = Split-Path -Parent $Path
+    if ([string]::IsNullOrWhiteSpace($runtimeDirectory)) {
+        throw (New-RunnerObservabilityStableError -Reason "runtime_path_missing")
+    }
+    $volumeRoot = [IO.Path]::GetPathRoot($runtimeDirectory)
+    $current = Split-Path -Parent $runtimeDirectory
+    while (-not [string]::IsNullOrWhiteSpace($current) -and
+        ($current.TrimEnd("\") -ine $volumeRoot.TrimEnd("\"))) {
+        if (-not (Test-Path -LiteralPath $current -PathType Container)) {
+            throw (New-RunnerObservabilityStableError -Reason "runtime_parent_acl_failed")
+        }
+        $serviceGrant = "{0}:(X)" -f $ServiceAccount
+        Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_parent_acl_failed" -ArgumentList @(
+            $current,
+            "/grant:r",
+            $serviceGrant
+        )
+        $parent = Split-Path -Parent $current
+        if ([string]::IsNullOrWhiteSpace($parent) -or ($parent -ieq $current)) {
+            break
+        }
+        $current = $parent
+    }
+}
+
 function Set-RunnerObservabilityRuntimeFileAcl {
     [CmdletBinding()]
     param(
@@ -707,6 +739,7 @@ Export-ModuleMember -Function @(
     "Set-RunnerObservabilityFileAcl",
     "Set-RunnerObservabilityDirectoryAcl",
     "Set-RunnerObservabilityRuntimeAcl",
+    "Set-RunnerObservabilityRuntimeParentTraverseAcl",
     "Set-RunnerObservabilityRuntimeFileAcl",
     "Test-RunnerObservabilityMonitorIp",
     "Set-RunnerObservabilityHostsMapping",
