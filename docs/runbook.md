@@ -187,6 +187,26 @@ reset removes the old Runner token/certificate pair; copy the newly generated
 current pair only after the reset has finished. Step 0 inventory remains
 mandatory in either case.
 
+For the normal clean rebuild, use the Runner-side wizard after updating the
+checkout with the approved `git pull --ff-only` procedure:
+
+```powershell
+.\scripts\Initialize-RunnerObservabilityRunner.ps1 `
+    -CleanRebuild -MonitorIp '192.168.24.141' `
+    -CertificateTrustModel SelfSigned -AllowHostsChange
+```
+
+Omit `-MonitorIp` to enter it interactively, or add `-WhatIf` for a read-only
+plan. The wizard inventories first, verifies TCP/8765, requires
+`RESET-RUNNER`, removes only the managed Runner observability state, and pauses
+with `status=WAITING_FOR_MONITOR_FILES` for the operator to copy the new
+`monitor-token.txt` and public `monitor.crt` through the approved remote-control
+channel. It never copies `monitor.key`, prints token contents, deletes
+`C:\actions-runner`, or unregisters the Runner. It stages the current checkout
+HEAD and runs `Preflight`, `Configure`, and Heartbeat `Start` before reporting
+`status=OK`. A direct `Runner.Listener.exe` process still needs one manual
+restart after machine environment changes, followed by a real CI job.
+
 Transfer only the token file and, for a private-CA/self-signed trust model,
 the public `monitor.crt`. Never copy `monitor.key`. The Monitor administrator
 should perform the transfer from an elevated administrative PowerShell; the operator does not

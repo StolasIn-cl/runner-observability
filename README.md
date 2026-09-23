@@ -382,6 +382,53 @@ Because the Monitor regenerated both files, any copies and trust entry from a
 previous Monitor generation are stale; the rebuilt Runner must receive the
 current pair through the approved secure transfer channel.
 
+### Recommended one-command clean rebuild
+
+After the Runner Step 0 inventory, run the wizard from the updated repository
+checkout on the Runner. If this checkout needs the latest script, update it
+first with the repository's normal `git pull --ff-only` procedure. The wizard
+uses the checkout's current immutable `HEAD`; it does not contain a hard-coded
+old revision:
+
+```powershell
+.\scripts\Initialize-RunnerObservabilityRunner.ps1 `
+    -CleanRebuild -MonitorIp '192.168.24.141' `
+    -CertificateTrustModel SelfSigned -AllowHostsChange
+```
+
+Omit `-MonitorIp` to have the wizard ask for the confirmed Monitor IPv4
+address. Run `-WhatIf` first if you want to inspect the planned flow without
+changing the Runner. The wizard performs the following sequence:
+
+1. read-only inventory and state gate;
+2. Monitor TCP/8765 reachability check;
+3. explicit `RESET-RUNNER` confirmation;
+4. removal of the named Heartbeat service, managed install root, old token and
+   public certificate, and the four observability machine environment values;
+5. optional removal/recreation of the exact `monitor-test.local` hosts mapping
+   when `-AllowHostsChange` is supplied;
+6. a pause with `status=WAITING_FOR_MONITOR_FILES` so the operator can use the
+   approved remote-control channel to place `monitor-token.txt` and
+   `monitor.crt` in the displayed secret directory;
+7. current-HEAD release staging, import smoke test, Runner `Preflight`,
+   `Configure`, and Heartbeat `Start`.
+
+The wizard never copies files between hosts, reads or prints the token,
+accepts `monitor.key`, removes `C:\actions-runner`, unregisters the GitHub
+Actions Runner, or deletes the source checkout. For a self-signed/private-CA
+certificate it prints only the public SHA-256 fingerprint and requires the
+operator to type `TRUST-CERTIFICATE` after verifying it against the Monitor.
+If an old matching LocalMachine trust entry is found, it requires the separate
+`REMOVE-OLD-MONITOR-CERT` confirmation before removing that exact certificate.
+The final `status=OK` means the observability agent and Heartbeat service are
+ready; the existing direct `Runner.Listener.exe` launch is reported as
+`runner_listener_restart=manual_required`. Restart that verified listener once,
+then run one real CI job and confirm the Dashboard shows the physical Runner
+as active.
+
+The detailed blocks below remain the low-level fallback for troubleshooting or
+for machines whose paths differ from the standard conventions.
+
 ### Step 1 -- after the full-clean reset, transfer the current pair from the Monitor
 
 For the explicit full-clean acceptance below, do not run this transfer block

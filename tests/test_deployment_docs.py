@@ -1297,6 +1297,18 @@ class ReadmeOnboardingShapeTests(unittest.TestCase):
             with self.subTest(term=term):
                 self.assertIn(term, lowered)
 
+    def test_runner_wizard_is_the_primary_clean_rebuild_entrypoint(self) -> None:
+        lowered = self.text.lower()
+        for term in (
+            "initialize-runnerobservabilityrunner.ps1",
+            "-cleanrebuild",
+            "waiting_for_monitor_files",
+            "current immutable",
+            "runner_listener_restart=manual_required",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, lowered)
+
 
 class CanaryEvidenceTemplateShapeTests(unittest.TestCase):
     def setUp(self) -> None:
