@@ -42,10 +42,89 @@ Get-Service -Name 'RunnerObservabilityMonitor','RunnerObservabilityHeartbeat' `
 如果 `current-release.txt` 存在，不要把新安裝流程套在既有安裝上；請看
 `docs/runbook.md` 的 update 流程。
 
-## 1. 從 0 重建 Runner
+## 1. 從 0 重建 Monitor
 
-Monitor 必須先完成安裝並確認可連線。取得 Monitor 的實際 IPv4 後，在 Runner
-執行：
+以下流程只用於要丟棄 Monitor 的舊 service、token、certificate、private key、
+config 與 telemetry database 的乾淨環境。先在 Monitor Host 的系統管理員
+PowerShell 確認實際 Monitor IPv4 與 Runner IPv4：
+
+```powershell
+Get-NetIPConfiguration |
+    Where-Object { $_.NetAdapter.Status -eq 'Up' } |
+    Select-Object InterfaceAlias,
+        @{Name='IPv4'; Expression={
+            (@($_.IPv4Address | ForEach-Object { $_.IPAddress }) -join ', '
+        }},
+        IPv4DefaultGateway
+
+Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue |
+    Select-Object LocalAddress, LocalPort, OwningProcess
+```
+
+確認路由可達的 Monitor IPv4 與每台 Runner 的 IPv4 後，執行下面的完整重建。
+這段只刪除列出的 Monitor-owned 檔案，不會刪除 GitHub Runner registration：
+
+```powershell
+$monitorScript = '.\scripts\Install-RunnerObservabilityMonitor.ps1'
+$config = 'C:\runner-observability\service-config.json'
+$database = 'C:\runner-observability-data\monitor.sqlite'
+$secretRoot = 'C:\runner-observability-secrets'
+$runnerIp = '<CONFIRMED_RUNNER_IPV4>'
+$ownedFiles = @(
+    (Join-Path $secretRoot 'monitor-token.txt'),
+    (Join-Path $secretRoot 'monitor.crt'),
+    (Join-Path $secretRoot 'monitor.key'),
+    $config,
+    $database,
+    ($database + '-wal'),
+    ($database + '-shm')
+)
+
+& $monitorScript -Action Status -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+& $monitorScript -Action Uninstall -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+
+$confirmation = Read-Host 'Type RESET-MONITOR to delete the listed Monitor files'
+if ($confirmation -cne 'RESET-MONITOR') {
+    throw 'Monitor clean rebuild cancelled'
+}
+
+$existing = @($ownedFiles | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+if ($existing.Count -gt 0) {
+    Remove-Item -LiteralPath $existing -Force
+}
+if (@($ownedFiles | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }).Count -gt 0) {
+    throw 'Monitor clean rebuild did not remove every listed file'
+}
+
+& $monitorScript -Action Install `
+    -ConfigPath $config `
+    -DatabasePath $database `
+    -SecretRoot $secretRoot `
+    -CertificateMode SelfSigned `
+    -AllowDevSelfSigned `
+    -TrustSelfSignedCertificate `
+    -RunnerAddress $runnerIp
+
+& $monitorScript -Action Start -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+```
+
+這會由腳本自動尋找可用的 Python。若回報 `python_not_found` 或
+`python_import_failed`，先從公司核准來源安裝 Python 3.11+/pywin32，再重跑；
+不要把固定 Python path 寫進 README。`SelfSigned` 僅限核准的測試環境；正式環境
+應改用既有受信任的 certificate pair。Monitor 產生的 `monitor-token.txt`、
+`monitor.crt` 與 `monitor.key` 留在 Monitor Host，只有前兩者稍後會傳到 Runner。
+
+Monitor 啟動後確認：
+
+```powershell
+curl.exe -k -sS https://127.0.0.1:8765/api/health
+Get-NetTCPConnection -LocalPort 8765 -State Listen
+```
+
+## 2. 從 0 重建 Runner
+
+Monitor first; Runner second. 取得並確認 Monitor 的實際 IPv4 後，在 Runner
+的系統管理員 PowerShell 執行：
 
 ```powershell
 git pull --ff-only origin codex/runner-observability
@@ -76,9 +155,9 @@ git pull --ff-only origin codex/runner-observability
 After the full-clean reset, do not run this transfer block outside the wizard.
 The reset removes the old token/certificate pair; transfer the newly generated current pair only after `WAITING_FOR_MONITOR_FILES`。腳本會 stage the current immutable release，並保留原本的 Runner registration。
 
-## 2. Monitor service 操作
+## 3. Monitor service 操作
 
-Monitor first; Runner second. 這些命令在 Monitor Host 執行；預設值使用目前約定的 config、database、secret
+這些命令在 Monitor Host 執行；預設值使用目前約定的 config、database、secret
 root 與 service name。每次操作仍會先 inventory。
 
 ```powershell
@@ -104,7 +183,7 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen
 若重新產生 token、certificate、Monitor Python 或 dashboard static files，請
 依實際啟動方式重啟 Monitor service/process。
 
-## 3. Runner heartbeat service 操作
+## 4. Runner heartbeat service 操作
 
 這些命令在 Runner Host 執行。這個 service 只負責送
 `runner.heartbeat`，不是 GitHub Actions 的 `Runner.Listener.exe`。
@@ -128,7 +207,7 @@ sc.exe queryex RunnerObservabilityHeartbeat
 listener；machine environment 第一次設定或變更後，才需要用實際 launch method
 手動重啟 listener，不需要整台 Windows reboot。
 
-## 4. 完成驗證
+## 5. 完成驗證
 
 在 Runner 確認 service、config、stable identity 與 heartbeat state：
 
@@ -159,7 +238,7 @@ $dashboard.active_runners |
 狀態都正確。只有 local test pass 或 Windows service `Running`，都不代表已完成
 端到端驗證。
 
-## 5. 常見限制
+## 6. 常見限制
 
 - `monitor-test.local` 必須解析到確認過的 Monitor IP；若組織 DNS 沒有提供，使用
   `-AllowHostsChange` 讓 wizard 維護一筆 hosts mapping。
