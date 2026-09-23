@@ -763,7 +763,7 @@ root is new:
 ```powershell
 $sourceRoot = 'C:\runner-observability-bootstrap'
 $installRoot = 'C:\runner-observability-agent'
-$revision = 'd3d73b5' # approved runner-observability commit; use the chosen immutable revision
+$revision = '4e4642900b188e0c9eacb4bc188401db0999b022' # approved Runner release; use the chosen immutable revision
 
 # Obtain the source through the approved repository/artifact channel. This
 # example uses the public remote and a detached, immutable commit.
