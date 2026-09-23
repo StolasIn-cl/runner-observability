@@ -121,8 +121,14 @@ function Resolve-RunnerWizardPython {
     }
     Write-Output ("python_path={0}" -f $PythonPath)
     try {
-        & $PythonPath -s --version 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
+        $versionOutput = @(& $PythonPath -s --version 2>&1)
+        $versionExitCode = $LASTEXITCODE
+        $versionText = [string]($versionOutput -join [Environment]::NewLine)
+        if ($versionText -match "(?i)Access is denied") {
+            throw (New-RunnerWizardError -Reason "python_execute_access_denied")
+        }
+        if ($versionExitCode -ne 0) {
+            Write-Output ("python_execute_exit_code={0}" -f $versionExitCode)
             throw (New-RunnerWizardError -Reason "python_execute_failed")
         }
     }

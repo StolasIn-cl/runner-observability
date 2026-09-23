@@ -399,11 +399,11 @@ the latest script, update it first with the repository's normal
 ```
 
 The wizard prints the selected `python_path` and executes `python --version`
-before the reset confirmation. If it reports `python_execute_access_denied`,
-do not repeat the reset with the same runtime. Use `-PythonPath` with an
-inventory-confirmed executable that the interactive user can run and that can
-also be granted read/execute access for the configured Heartbeat service
-account, for example:
+before the reset confirmation. A failed preflight also prints the native exit
+code. If it reports `python_execute_access_denied`, do not repeat the reset
+with the same runtime. Use `-PythonPath` with an inventory-confirmed
+executable that the interactive user can run and that can also be granted
+read/execute access for the configured Heartbeat service account, for example:
 
 ```powershell
 .\scripts\Initialize-RunnerObservabilityRunner.ps1 `

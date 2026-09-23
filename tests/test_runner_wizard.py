@@ -125,6 +125,9 @@ class RunnerWizardContractTests(unittest.TestCase):
             "function Get-RunnerWizardCertificateSha256", 1
         )[0]
         self.assertIn("--version", resolver)
+        self.assertIn("$versionOutput", resolver)
+        self.assertIn("$versionExitCode", resolver)
+        self.assertIn("python_execute_exit_code", resolver)
         self.assertIn("python_execute_access_denied", resolver)
         self.assertIn("win32serviceutil", resolver)
         self.assertIn("windows_service_runtime_unavailable", resolver)
