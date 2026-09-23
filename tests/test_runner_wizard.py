@@ -120,6 +120,15 @@ class RunnerWizardContractTests(unittest.TestCase):
         self.assertRegex(self.text, r"(?im)current-release\.txt")
         self.assertNotIn("d3d73b5", self.text)
 
+    def test_python_runtime_is_executed_before_clean_reset(self) -> None:
+        resolver = self.text.split("function Resolve-RunnerWizardPython", 1)[1].split(
+            "function Get-RunnerWizardCertificateSha256", 1
+        )[0]
+        self.assertIn("--version", resolver)
+        self.assertIn("python_execute_access_denied", resolver)
+        wizard = self.text.split("function Invoke-RunnerWizard {", 1)[1]
+        self.assertLess(wizard.index("Resolve-RunnerWizardPython"), wizard.index('Invoke-RunnerScript -Action "Uninstall"'))
+
     def test_wizard_delegates_lifecycle_to_existing_runner_installer(self) -> None:
         for action in ("Uninstall", "Preflight", "Configure", "Start"):
             with self.subTest(action=action):

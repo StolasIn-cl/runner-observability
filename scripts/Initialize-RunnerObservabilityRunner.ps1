@@ -119,6 +119,22 @@ function Resolve-RunnerWizardPython {
     if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
         throw (New-RunnerWizardError -Reason "python_not_found")
     }
+    Write-Output ("python_path={0}" -f $PythonPath)
+    try {
+        & $PythonPath -s --version 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw (New-RunnerWizardError -Reason "python_execute_failed")
+        }
+    }
+    catch {
+        if ($_.Exception.Message -match "(?i)Access is denied") {
+            throw (New-RunnerWizardError -Reason "python_execute_access_denied")
+        }
+        if ($_.Exception.Message -eq "python_execute_failed") {
+            throw
+        }
+        throw (New-RunnerWizardError -Reason "python_execute_failed")
+    }
 }
 
 function Get-RunnerWizardCertificateSha256 {
