@@ -415,6 +415,17 @@ account, for example:
 The wizard does not silently switch to a per-user Python installation because
 the Heartbeat service runs as `NT AUTHORITY\LocalService`; a runtime that works
 for the interactive user can still be inaccessible to the service account.
+The selected runtime must also contain the optional Windows-service dependency.
+If the wizard reports `windows_service_runtime_unavailable`, install it into
+the selected inventory-confirmed runtime from an elevated PowerShell, then
+rerun the wizard:
+
+```powershell
+$python = 'C:\path\to\approved\python.exe'
+& $python -m pip install --upgrade --no-user 'pywin32>=306'
+& $python -s -c "import servicemanager, win32event, win32service, win32serviceutil"
+if ($LASTEXITCODE -ne 0) { throw 'pywin32 installation verification failed' }
+```
 
 Omit `-MonitorIp` to have the wizard ask for the confirmed Monitor IPv4
 address. Run `-WhatIf` first if you want to inspect the planned flow without

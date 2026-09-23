@@ -126,6 +126,8 @@ class RunnerWizardContractTests(unittest.TestCase):
         )[0]
         self.assertIn("--version", resolver)
         self.assertIn("python_execute_access_denied", resolver)
+        self.assertIn("win32serviceutil", resolver)
+        self.assertIn("windows_service_runtime_unavailable", resolver)
         wizard = self.text.split("function Invoke-RunnerWizard {", 1)[1]
         self.assertLess(wizard.index("Resolve-RunnerWizardPython"), wizard.index('Invoke-RunnerScript -Action "Uninstall"'))
 

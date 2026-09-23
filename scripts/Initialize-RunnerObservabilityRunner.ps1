@@ -135,6 +135,18 @@ function Resolve-RunnerWizardPython {
         }
         throw (New-RunnerWizardError -Reason "python_execute_failed")
     }
+    try {
+        & $PythonPath -s -c "import servicemanager, win32event, win32service, win32serviceutil" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw (New-RunnerWizardError -Reason "windows_service_runtime_unavailable")
+        }
+    }
+    catch {
+        if ($_.Exception.Message -eq "windows_service_runtime_unavailable") {
+            throw
+        }
+        throw (New-RunnerWizardError -Reason "windows_service_runtime_unavailable")
+    }
 }
 
 function Get-RunnerWizardCertificateSha256 {
