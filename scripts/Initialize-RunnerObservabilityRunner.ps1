@@ -170,9 +170,13 @@ function Get-RunnerWizardHostMappings {
 }
 
 function Remove-RunnerWizardHostMappings {
-    param([Parameter(Mandatory = $true)][object[]]$Mappings)
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Mappings
+    )
 
-    if ($Mappings.Count -eq 0) {
+    if (($null -eq $Mappings) -or ($Mappings.Count -eq 0)) {
         return "unchanged"
     }
     $contents = [IO.File]::ReadAllText($hostsPath)

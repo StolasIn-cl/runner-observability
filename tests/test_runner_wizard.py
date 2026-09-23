@@ -95,6 +95,10 @@ class RunnerWizardContractTests(unittest.TestCase):
         )
         self.assertRegex(self.text, r"(?im)SecretFiles\s*\|\s*Where-Object.+AccessDenied")
 
+    def test_hosts_cleanup_accepts_a_missing_mapping(self) -> None:
+        self.assertRegex(self.text, r"(?im)AllowEmptyCollection")
+        self.assertRegex(self.text, r"(?im)Mappings\.Count\s*-eq\s*0")
+
     def test_secret_gate_requires_token_and_certificate_without_printing_contents(self) -> None:
         self.assertIn("monitor-token.txt", self.text)
         self.assertIn("monitor.crt", self.text)
