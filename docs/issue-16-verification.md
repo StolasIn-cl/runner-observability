@@ -68,12 +68,12 @@ Remove-Item -LiteralPath 'C:\runner-observability-secrets\monitor-token.txt','C:
 .\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Start -ServiceName 'RunnerObservabilityMonitor'
 .\scripts\Install-RunnerObservabilityMonitor.ps1 -Action Status -ServiceName 'RunnerObservabilityMonitor'
 Get-NetTCPConnection -LocalPort 8765 -State Listen
-Invoke-WebRequest -Uri 'https://127.0.0.1:8765/api/health' -SkipCertificateCheck
+curl.exe -k -i https://127.0.0.1:8765/api/health
 ```
 
-`-SkipCertificateCheck` is available in PowerShell 7. In Windows PowerShell
-5.1, use `curl.exe -k https://127.0.0.1:8765/api/health` for the same local
-self-signed health check.
+The `curl.exe -k` form works in Windows PowerShell 5.1 for this local
+self-signed health check. PowerShell 7 may alternatively use
+`Invoke-WebRequest -Uri 'https://127.0.0.1:8765/api/health' -SkipCertificateCheck`.
 
 Record only service state, listener PID, HTTP status/body health fields,
 certificate fingerprint/expiry metadata, and firewall remote addresses.
