@@ -130,6 +130,8 @@ class BootstrapModuleStaticContractTests(unittest.TestCase):
         self.assertIn('"Administrators:(OI)(CI)(F)"', runtime_acl)
         self.assertIn("Get-RunnerObservabilityCurrentAccount", runtime_acl)
         self.assertIn("$runtimeUserGrant", runtime_acl)
+        self.assertIn("$runtimeFileServiceGrant", runtime_acl)
+        self.assertIn("$runtimeFileUserGrant", runtime_acl)
         self.assertIn("WindowsIdentity]::GetCurrent()", self.module_text)
         self.assertLess(
             runtime_acl.index('"/inheritance:r"'), runtime_acl.index("$serviceGrant,")

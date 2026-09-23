@@ -365,6 +365,8 @@ function Set-RunnerObservabilityRuntimeAcl {
     $runtimeUser = Get-RunnerObservabilityCurrentAccount
     $serviceGrant = "{0}:(OI)(CI)(RX)" -f $ServiceAccount
     $runtimeUserGrant = "{0}:(OI)(CI)(RX)" -f $runtimeUser
+    $runtimeFileServiceGrant = "{0}:(RX)" -f $ServiceAccount
+    $runtimeFileUserGrant = "{0}:(RX)" -f $runtimeUser
     Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_acl_failed" -ArgumentList @(
         $Path,
         "/inheritance:r",
@@ -379,6 +381,25 @@ function Set-RunnerObservabilityRuntimeAcl {
         $Path,
         "/grant",
         $runtimeUserGrant,
+        "/t",
+        "/c"
+    )
+    # Some protected per-user runtimes retain an empty DACL on individual
+    # files even after an inheritable directory grant. Apply exact file
+    # grants recursively so the loader can read DLLs and extension modules.
+    Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_acl_failed" -ArgumentList @(
+        $Path,
+        "/grant:r",
+        "SYSTEM:(F)",
+        "Administrators:(F)",
+        $runtimeFileServiceGrant,
+        "/t",
+        "/c"
+    )
+    Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "runtime_acl_failed" -ArgumentList @(
+        $Path,
+        "/grant",
+        $runtimeFileUserGrant,
         "/t",
         "/c"
     )
