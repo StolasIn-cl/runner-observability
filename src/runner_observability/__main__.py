@@ -39,20 +39,33 @@ def main(argv: Sequence[str] | None = None, **emit_options: Any) -> int:
     emit.add_argument("--endpoint", required=True)
     emit.add_argument("--token", required=True)
     emit.add_argument("--event-json", required=True)
+    emit.add_argument("--outbox-dir", default=None)
+    flush = subcommands.add_parser("flush", help="replay pending schema-v1 events")
+    flush.add_argument("--endpoint", required=True)
+    flush.add_argument("--token-file", required=True)
+    flush.add_argument("--outbox-dir", required=True)
     arguments = parser.parse_args(argv)
-    if arguments.command == "emit":
-        return emit_main(
-            [
+    if arguments.command in {"emit", "flush"}:
+        forwarded = ["--endpoint", arguments.endpoint]
+        if arguments.outbox_dir is not None:
+            forwarded.extend(["--outbox-dir", arguments.outbox_dir])
+        if arguments.command == "emit":
+            forwarded = [
                 "emit",
-                "--endpoint",
-                arguments.endpoint,
+                *forwarded,
                 "--token",
                 arguments.token,
                 "--event-json",
                 arguments.event_json,
-            ],
-            **emit_options,
-        )
+            ]
+        else:
+            forwarded = [
+                "flush",
+                *forwarded,
+                "--token-file",
+                arguments.token_file,
+            ]
+        return emit_main([item for item in forwarded if item is not None], **emit_options)
     if arguments.token is None and arguments.token_file is None:
         print("serve failed reason=auth_credential_missing", file=sys.stderr)
         return 2

@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import argparse
 import json
+from pathlib import Path
 import select
 import socket
 import ssl
@@ -17,6 +18,8 @@ from urllib.error import URLError
 from urllib.parse import urlsplit
 
 from .contracts import ValidationError, validate_event
+from .credentials import CredentialFileError, read_token_file
+from .outbox import DurableOutbox, OutboxLimits
 
 
 MAX_RETRIES = 2
@@ -28,6 +31,7 @@ Clock = Callable[[], float]
 Sleeper = Callable[[float], None]
 Resolver = Callable[[str, int], Sequence[tuple[Any, ...]]]
 Connector = Callable[[tuple[Any, ...], float], socket.socket]
+DEFAULT_OUTBOX_LIMITS = OutboxLimits()
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,15 +177,56 @@ def main(
     emit.add_argument("--endpoint", required=True)
     emit.add_argument("--token", required=True)
     emit.add_argument("--event-json", required=True)
+    emit.add_argument("--outbox-dir", default=None)
+    flush = subcommands.add_parser("flush", help="replay pending schema-v1 events")
+    flush.add_argument("--endpoint", required=True)
+    flush.add_argument("--token-file", required=True)
+    flush.add_argument("--outbox-dir", required=True)
     args = parser.parse_args(argv)
-    if args.command != "emit":
-        return 2
     report = _safe_diagnostic(diagnostic or _stderr_diagnostic)
+    if args.command == "flush":
+        try:
+            token = read_token_file(Path(args.token_file))
+        except CredentialFileError as error:
+            report(f"telemetry_outbox_failed reason={error.reason}")
+            return 0
+        outbox = DurableOutbox(args.outbox_dir, limits=DEFAULT_OUTBOX_LIMITS, diagnostic=report)
+        return _drain_outbox(
+            outbox,
+            args.endpoint,
+            token,
+            transport=transport,
+            clock=clock,
+            sleeper=sleeper,
+            diagnostic=report,
+        )
     try:
         event: Any = json.loads(args.event_json)
     except json.JSONDecodeError:
         report("telemetry_event_rejected reason=invalid_json")
         return 0
+    if args.outbox_dir is not None:
+        outbox = DurableOutbox(args.outbox_dir, limits=DEFAULT_OUTBOX_LIMITS, diagnostic=report)
+        enqueue = outbox.enqueue(event)
+        if enqueue.status == "rejected":
+            reason = enqueue.reason or "outbox_storage_unavailable"
+            if reason in {"unsupported_schema", "invalid_event", "payload_too_large"}:
+                report(f"telemetry_event_rejected reason={reason}")
+            else:
+                report(f"telemetry_outbox_failed reason={reason}")
+            return 0
+        if enqueue.status == "conflict":
+            report("telemetry_outbox_failed reason=outbox_event_conflict")
+            return 0
+        return _drain_outbox(
+            outbox,
+            args.endpoint,
+            args.token,
+            transport=transport,
+            clock=clock,
+            sleeper=sleeper,
+            diagnostic=report,
+        )
     deliver_event(
         event,
         args.endpoint,
@@ -191,6 +236,31 @@ def main(
         sleeper=sleeper,
         diagnostic=report,
     )
+    return 0
+
+
+def _drain_outbox(
+    outbox: DurableOutbox,
+    endpoint: str,
+    token: str,
+    *,
+    transport: Transport | None,
+    clock: Clock,
+    sleeper: Sleeper,
+    diagnostic: Diagnostic,
+) -> int:
+    def deliver(event: object, event_endpoint: str, event_token: str) -> DeliveryResult:
+        return deliver_event(
+            event,
+            event_endpoint,
+            event_token,
+            transport=transport,
+            clock=clock,
+            sleeper=sleeper,
+            diagnostic=diagnostic,
+        )
+
+    outbox.drain(deliver, endpoint, token, clock=clock, sleeper=sleeper)
     return 0
 
 
