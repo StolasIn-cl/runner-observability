@@ -276,6 +276,60 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _http_status_class(status: int | None) -> str | None:
+    if status is None or status < 100 or status > 599:
+        return None
+    return f"{status // 100}xx"
+
+
+_SAFE_FAILURE_REASONS = frozenset(
+    {
+        "auth_credential_file_missing",
+        "auth_credential_invalid",
+        "state_identity_mismatch",
+        "state_file_unwritable",
+        "temporary_network_failure",
+        "transport_failure",
+        "temporary_http_failure",
+        "rejected_http_response",
+        "delivery_failed",
+    }
+)
+
+
+def _safe_failure_reason(reason: object | None) -> str:
+    if isinstance(reason, str) and reason in _SAFE_FAILURE_REASONS:
+        return reason
+    return "delivery_failed"
+
+
+def _write_status_atomic(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            json.dump(payload, temporary, ensure_ascii=True, sort_keys=True)
+            temporary.write("\n")
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def _heartbeat_event(config: HeartbeatConfig, state: HeartbeatState, sequence: int) -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -330,6 +384,8 @@ class HeartbeatLoop:
         self._network_probe = network_probe
         self._diagnostic = _safe_diagnostic(diagnostic or (lambda _message: None))
         self._state: HeartbeatState | None = None
+        self._status_path = Path(config.state_file).with_name("heartbeat-status.json")
+        self._last_success_at = self._load_last_success()
         self._event_endpoint = _canonical_event_endpoint(config.endpoint)
         if deliver is None:
             self._deliver = lambda event, _endpoint, token: deliver_event(
@@ -343,12 +399,43 @@ class HeartbeatLoop:
         else:
             self._deliver = deliver
 
+    def _load_last_success(self) -> str | None:
+        try:
+            raw = json.loads(self._status_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        value = raw.get("last_success_at") if isinstance(raw, Mapping) else None
+        return value if isinstance(value, str) and value else None
+
+    def _record_status(self, result: DeliveryResult, attempt_at: str) -> None:
+        if result.delivered:
+            self._last_success_at = attempt_at
+        failure_reason = _safe_failure_reason(result.reason)
+        payload = {
+            "schema_version": 1,
+            "service_name": self.config.service_name,
+            "runner_id": self.config.runner_id,
+            "last_attempt_at": attempt_at,
+            "last_success_at": self._last_success_at,
+            "last_result": "success" if result.delivered else "failure",
+            "last_attempt_count": result.attempts,
+            "last_http_status_class": _http_status_class(result.http_status),
+            "last_failure_reason": None if result.delivered else failure_reason,
+        }
+        try:
+            _write_status_atomic(self._status_path, payload)
+        except Exception:
+            self._diagnostic("heartbeat_status_write_failed")
+
     def emit_once(self) -> DeliveryResult:
+        attempt_at = _utc_timestamp()
         try:
             token = read_token_file(self.config.token_file)
         except CredentialFileError as error:
+            result = DeliveryResult(False, 0, error.reason)
+            self._record_status(result, attempt_at)
             self._diagnostic(f"heartbeat_delivery_failed reason={error.reason}")
-            return DeliveryResult(False, 0, error.reason)
+            return result
         try:
             if self._state is None:
                 self._state = HeartbeatState.load(
@@ -358,12 +445,15 @@ class HeartbeatLoop:
                 )
             self._state, sequence = self._state.reserve(self.config.state_file)
         except HeartbeatStateError as error:
+            result = DeliveryResult(False, 0, error.reason)
+            self._record_status(result, attempt_at)
             self._diagnostic(f"heartbeat_delivery_failed reason={error.reason}")
-            return DeliveryResult(False, 0, error.reason)
+            return result
         event = _heartbeat_event(self.config, self._state, sequence)
         result = self._deliver(event, self._event_endpoint, token)
+        self._record_status(result, attempt_at)
         if not result.delivered:
-            self._diagnostic(f"heartbeat_delivery_failed reason={result.reason or 'delivery_failed'}")
+            self._diagnostic(f"heartbeat_delivery_failed reason={_safe_failure_reason(result.reason)}")
         return result
 
     def _wait_for_network(self, stop_event: Any) -> bool:

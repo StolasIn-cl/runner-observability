@@ -76,6 +76,59 @@ class MonitorHttpTests(unittest.TestCase):
         self.assertEqual(response, {"error": "unauthorized"})
         self.assertEqual(self.store.history(), [])
 
+    def test_ingest_response_reports_projection_and_producer_watermark(self) -> None:
+        body = json.dumps(heartbeat()).encode("utf-8")
+
+        status, response, _ = self.request(
+            "POST",
+            "/v1/events",
+            body,
+            {"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}"},
+        )
+
+        self.assertEqual(status, 202)
+        self.assertTrue(response["accepted"])
+        self.assertFalse(response["duplicate"])
+        self.assertTrue(response["projection_applied"])
+        self.assertEqual(response["producer_watermark"], 1)
+
+    def test_stale_and_duplicate_responses_report_projection_and_watermark(self) -> None:
+        newer = heartbeat(event_id="10000000-0000-4000-8000-000000000002")
+        newer["producer_sequence"] = 2
+        stale = heartbeat(event_id="10000000-0000-4000-8000-000000000003")
+
+        def post(event: dict[str, object]) -> dict[str, object]:
+            status, response, _ = self.request(
+                "POST",
+                "/v1/events",
+                json.dumps(event).encode("utf-8"),
+                {"Content-Type": "application/json", "Authorization": f"Bearer {TOKEN}"},
+            )
+            self.assertEqual(status, 202)
+            return response
+
+        self.assertEqual(post(newer), {
+            "accepted": True,
+            "duplicate": False,
+            "projection_applied": True,
+            "producer_watermark": 2,
+            "event_id": newer["event_id"],
+        })
+        self.assertEqual(post(stale), {
+            "accepted": True,
+            "duplicate": False,
+            "projection_applied": False,
+            "producer_watermark": 2,
+            "event_id": stale["event_id"],
+        })
+        self.assertEqual(post(stale), {
+            "accepted": True,
+            "duplicate": True,
+            "projection_applied": False,
+            "producer_watermark": 2,
+            "event_id": stale["event_id"],
+        })
+
     def test_ingest_returns_safe_schema_error_without_retaining_payload(self) -> None:
         rejected = heartbeat()
         rejected["schema_version"] = 2

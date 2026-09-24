@@ -162,7 +162,13 @@ def create_server(
                 result = store.ingest(event, request_clock())
             self._json(
                 202,
-                {"accepted": result.accepted, "duplicate": result.duplicate, "event_id": result.event_id},
+                {
+                    "accepted": result.accepted,
+                    "duplicate": result.duplicate,
+                    "projection_applied": result.projection_applied,
+                    "producer_watermark": result.producer_watermark,
+                    "event_id": result.event_id,
+                },
             )
 
         def do_GET(self) -> None:  # noqa: N802 - required stdlib handler name

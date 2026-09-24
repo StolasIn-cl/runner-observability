@@ -37,6 +37,7 @@ class DeliveryResult:
     delivered: bool
     attempts: int
     reason: str | None = None
+    http_status: int | None = None
 
 
 def deliver_event(
@@ -74,10 +75,11 @@ def deliver_event(
     started_at = clock()
     attempts = 0
     reason = "temporary_network_failure"
+    http_status: int | None = None
     while True:
         remaining = MAX_DELIVERY_SECONDS - (clock() - started_at)
         if attempts and remaining <= 0:
-            result = DeliveryResult(False, attempts, reason)
+            result = DeliveryResult(False, attempts, reason, http_status)
             report(f"telemetry_delivery_failed reason={reason}")
             return result
         attempts += 1
@@ -97,22 +99,23 @@ def deliver_event(
             reason = "temporary_network_failure"
             retryable = True
         except Exception:
-            result = DeliveryResult(False, attempts, "transport_failure")
+            result = DeliveryResult(False, attempts, "transport_failure", http_status)
             report("telemetry_delivery_failed reason=transport_failure")
             return result
         else:
+            http_status = status
             if 200 <= status < 300:
-                return DeliveryResult(True, attempts)
+                return DeliveryResult(True, attempts, http_status=http_status)
             reason = "temporary_http_failure" if status == 429 or 500 <= status < 600 else "rejected_http_response"
             retryable = reason == "temporary_http_failure"
 
         if not retryable or attempts > MAX_RETRIES:
-            result = DeliveryResult(False, attempts, reason)
+            result = DeliveryResult(False, attempts, reason, http_status)
             report(f"telemetry_delivery_failed reason={reason}")
             return result
         remaining = MAX_DELIVERY_SECONDS - (clock() - started_at)
         if remaining <= 0:
-            result = DeliveryResult(False, attempts, reason)
+            result = DeliveryResult(False, attempts, reason, http_status)
             report(f"telemetry_delivery_failed reason={reason}")
             return result
         sleeper(min(float(2 ** (attempts - 1)), remaining))

@@ -26,6 +26,8 @@ class IngestResult:
     event_id: str
     accepted: bool
     duplicate: bool
+    projection_applied: bool = False
+    producer_watermark: int | None = None
 
 
 class Store:
@@ -53,10 +55,16 @@ class Store:
         notifications: list[dict[str, Any]] = []
         with self._connection:
             duplicate = self._connection.execute(
-                "SELECT 1 FROM events WHERE event_id = ?", (validated.event_id,)
+                "SELECT projection_applied FROM events WHERE event_id = ?", (validated.event_id,)
             ).fetchone()
             if duplicate is not None:
-                return IngestResult(validated.event_id, accepted=True, duplicate=True)
+                return IngestResult(
+                    validated.event_id,
+                    accepted=True,
+                    duplicate=True,
+                    projection_applied=bool(duplicate["projection_applied"]),
+                    producer_watermark=self._producer_watermark(validated),
+                )
             self._connection.execute(
                 """
                 INSERT INTO events (
@@ -89,7 +97,21 @@ class Store:
                     notifications.append(incident)
         for incident in notifications:
             notify_safely(self._notifier, incident)
-        return IngestResult(validated.event_id, accepted=True, duplicate=False)
+        return IngestResult(
+            validated.event_id,
+            accepted=True,
+            duplicate=False,
+            projection_applied=bool(applied),
+            producer_watermark=self._producer_watermark(validated),
+        )
+
+    def _producer_watermark(self, event: ValidatedEvent) -> int | None:
+        row = self._connection.execute(
+            """SELECT producer_sequence FROM producer_watermarks
+               WHERE runner_id = ? AND producer_id = ? AND producer_epoch = ?""",
+            (event.runner_id, event.producer_id, event.producer_epoch),
+        ).fetchone()
+        return None if row is None else int(row["producer_sequence"])
 
     def current_runner(self, runner_id: str) -> dict[str, Any] | None:
         """Return the baseline current view for one runner, if seen."""

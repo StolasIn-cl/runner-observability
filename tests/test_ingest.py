@@ -76,6 +76,25 @@ class StoreIntegrationTests(unittest.TestCase):
         runner = store.current_runner(event.runner_id)
         self.assertEqual(runner["last_received_at"], "2026-09-18T01:10:01Z")
 
+    def test_ingest_result_reports_projection_and_current_producer_watermark(self) -> None:
+        store = self.make_store()
+        self.addCleanup(store.close)
+
+        newer = dict(fixture_events()[0])
+        newer["event_id"] = "10000000-0000-0000-0000-000000000010"
+        newer["producer_sequence"] = 2
+        older = dict(fixture_events()[0])
+        older["event_id"] = "10000000-0000-0000-0000-000000000011"
+        older["producer_sequence"] = 1
+
+        applied = store.ingest(validate_event(newer), "2026-09-18T01:10:02Z")
+        stale = store.ingest(validate_event(older), "2026-09-18T01:10:03Z")
+
+        self.assertTrue(applied.projection_applied)
+        self.assertEqual(applied.producer_watermark, 2)
+        self.assertFalse(stale.projection_applied)
+        self.assertEqual(stale.producer_watermark, 2)
+
     def test_rejects_a_forged_unvalidated_event_without_partial_persistence(self) -> None:
         """Catches a store that writes an envelope before enforcing the validation boundary."""
         store = self.make_store()

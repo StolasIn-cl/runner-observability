@@ -52,6 +52,7 @@ class RunnerAgentTests(unittest.TestCase):
         self.assertTrue(result.delivered)
         self.assertEqual(result.attempts, 1)
         self.assertIsNone(result.reason)
+        self.assertEqual(result.http_status, 202)
 
     def test_429_recovery_retries_once_and_delivers(self) -> None:
         clock = FakeClock()
@@ -194,6 +195,7 @@ class RunnerAgentTests(unittest.TestCase):
         self.assertFalse(result.delivered)
         self.assertEqual(result.attempts, 3)
         self.assertEqual(result.reason, "temporary_http_failure")
+        self.assertEqual(result.http_status, 503)
         self.assertEqual(diagnostics, ["telemetry_delivery_failed reason=temporary_http_failure"])
 
     def test_auth_and_schema_http_rejections_are_not_retried(self) -> None:

@@ -507,13 +507,29 @@ python -m pip install ".[windows-service]"
     -StatePath "C:\runner-observability\runner-heartbeat-state.json"
 ```
 
-The configuration and state writes are atomic. Each Runner has its own
-`runner_id`, `producer_id`, `producer_epoch`, sequence, and local state file;
-do not copy a state file from another Runner. The service account receives
-read access to the config/token files and modify access to the state-file
-directory. Use the same script for `Status`, `Start`, `Stop`, `Restart`, and
-`Uninstall`; uninstall removes only the named service and leaves the token,
-state, and evidence files for operator cleanup.
+The configuration, heartbeat state, and sibling `heartbeat-status.json` writes
+are atomic. Each Runner has its own `runner_id`, `producer_id`,
+`producer_epoch`, sequence, and local state file; do not copy a state file from
+another Runner. The status file is secret-free and records only the latest
+attempt time, last successful delivery, result, retry count, HTTP status class,
+and stable failure reason. It never contains the token, endpoint, or event
+payload. A status-file write failure is diagnostic-only and cannot change the
+heartbeat's fail-open delivery behavior. The service account receives read
+access to the config/token files and modify access to the state-file directory.
+Use the same script for `Status`, `Start`, `Stop`, `Restart`, and `Uninstall`;
+uninstall removes only the named service and leaves the token, state, and
+evidence files for operator cleanup.
+
+For a read-only service-owned delivery check, inspect the status file next to
+the configured state path without printing any token or payload:
+
+```powershell
+Get-Content -Raw (Join-Path (Split-Path $config.state_file) 'heartbeat-status.json') |
+    ConvertFrom-Json |
+    Select-Object schema_version, service_name, runner_id, last_attempt_at,
+        last_success_at, last_result, last_attempt_count,
+        last_http_status_class, last_failure_reason
+```
 
 ```powershell
 ./scripts/Install-RunnerHeartbeatService.ps1 -Action Status

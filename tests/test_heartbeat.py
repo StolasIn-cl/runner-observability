@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from runner_observability.agent import DeliveryResult
 from runner_observability.heartbeat import (
@@ -189,6 +190,96 @@ class HeartbeatTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertIn("heartbeat_network_unavailable", diagnostics)
         self.assertNotIn("secret-token", "\n".join(diagnostics))
+
+    def test_failed_delivery_writes_safe_service_status(self) -> None:
+        config = self.config()
+        diagnostics: list[str] = []
+        loop = HeartbeatLoop(
+            config,
+            deliver=lambda _event, _endpoint, _token: DeliveryResult(
+                False, 3, "temporary_http_failure", 503
+            ),
+            diagnostic=diagnostics.append,
+        )
+
+        result = loop.emit_once()
+
+        self.assertFalse(result.delivered)
+        status_path = self.base / "heartbeat-status.json"
+        self.assertTrue(status_path.is_file())
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        self.assertEqual(status["service_name"], config.service_name)
+        self.assertEqual(status["runner_id"], RUNNER_A)
+        self.assertEqual(status["last_result"], "failure")
+        self.assertEqual(status["last_attempt_count"], 3)
+        self.assertEqual(status["last_http_status_class"], "5xx")
+        self.assertEqual(status["last_failure_reason"], "temporary_http_failure")
+        self.assertNotIn("secret-token", status_path.read_text(encoding="utf-8"))
+
+    def test_service_status_preserves_last_success_across_loop_restart(self) -> None:
+        config = self.config()
+        first_loop = HeartbeatLoop(
+            config,
+            deliver=lambda _event, _endpoint, _token: DeliveryResult(True, 1, http_status=202),
+        )
+        first_loop.emit_once()
+
+        second_loop = HeartbeatLoop(
+            config,
+            deliver=lambda _event, _endpoint, _token: DeliveryResult(
+                False, 3, "temporary_http_failure", 503
+            ),
+        )
+        second_loop.emit_once()
+
+        status = json.loads((self.base / "heartbeat-status.json").read_text(encoding="utf-8"))
+        self.assertIsNotNone(status["last_success_at"])
+        self.assertEqual(status["last_result"], "failure")
+
+    def test_service_status_redacts_untrusted_delivery_reason(self) -> None:
+        config = self.config()
+        diagnostics: list[str] = []
+        loop = HeartbeatLoop(
+            config,
+            deliver=lambda _event, _endpoint, _token: DeliveryResult(
+                False, 1, "transport failed: token=secret-token"
+            ),
+            diagnostic=diagnostics.append,
+        )
+
+        loop.emit_once()
+
+        status_text = (self.base / "heartbeat-status.json").read_text(encoding="utf-8")
+        status = json.loads(status_text)
+        self.assertEqual(status["last_failure_reason"], "delivery_failed")
+        self.assertNotIn("secret-token", status_text)
+        self.assertEqual(diagnostics, ["heartbeat_delivery_failed reason=delivery_failed"])
+
+    def test_status_write_failure_does_not_break_fail_open_delivery(self) -> None:
+        config = self.config()
+        diagnostics: list[str] = []
+        loop = HeartbeatLoop(
+            config,
+            deliver=lambda _event, _endpoint, _token: DeliveryResult(
+                False, 1, "temporary_network_failure"
+            ),
+            diagnostic=diagnostics.append,
+        )
+
+        with patch(
+            "runner_observability.heartbeat._write_status_atomic",
+            side_effect=RuntimeError("status serialization failed"),
+        ):
+            result = loop.emit_once()
+
+        self.assertFalse(result.delivered)
+        self.assertEqual(
+            diagnostics,
+            [
+                "heartbeat_status_write_failed",
+                "heartbeat_delivery_failed reason=temporary_network_failure",
+            ],
+        )
 
 
 if __name__ == "__main__":
