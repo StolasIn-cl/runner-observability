@@ -548,6 +548,65 @@ Those timestamped facts remain issue #6's HITL evidence boundary. After
 `Configure` or `RepairPermissions`, run the token read check as the actual
 Runner account without printing the token contents.
 
+## Runner job telemetry outbox
+
+The Runner job telemetry agent can persist a bounded, local delivery outbox
+when the Monitor is temporarily unavailable. This is a fail-open delivery
+path: the job result is not changed by telemetry persistence or replay
+failure. The outbox root is a protected Runner-owned data directory, separate
+from the secrets root. Grant the Runner service account access only to the
+directories required by the installed release and keep the token file in the
+existing protected secrets location.
+
+Use `--outbox-dir` with `emit` to enqueue the validated event before attempting
+delivery. A successful 2xx response removes the event from `pending`; a
+transient network or HTTP failure leaves it there for a later bounded replay;
+an authenticated or otherwise permanent delivery failure moves it to
+`dead-letter` with a stable reason. The default limits are 1,000 pending
+events, 32 MiB total pending JSON, and at most 100 events or 5 seconds per
+drain. Operators must not widen these limits on a live Runner without a
+separately reviewed capacity decision.
+
+The explicit replay command is `flush`. It reads the token from
+`--token-file`, never from the command line value, and uses the same
+`--outbox-dir` as the emitting agent:
+
+```powershell
+$outboxRoot = "C:\runner-observability\telemetry-outbox"
+$config = Get-Content -Raw "C:\runner-observability\heartbeat-config.json" |
+    ConvertFrom-Json
+
+python -m runner_observability flush `
+    --endpoint $config.endpoint `
+    --token-file $config.token_file `
+    --outbox-dir $outboxRoot
+```
+
+Before replay, use a read-only count check. Do not run `Get-Content` against
+the event files: event JSON contains telemetry payload fields and must not be
+copied into tickets, chat, or logs. These commands expose only filenames and
+counts, while leaving the queue unchanged:
+
+```powershell
+$pending = Get-ChildItem -LiteralPath (Join-Path $outboxRoot 'pending') -Filter '*.json' -File
+$deadLetter = Get-ChildItem -LiteralPath (Join-Path $outboxRoot 'dead-letter') -Filter '*.json' -File
+
+[pscustomobject]@{
+    pending_count = @($pending).Count
+    dead_letter_count = @($deadLetter).Count
+}
+```
+
+If `flush` reports a non-zero process status, preserve the outbox and inspect
+the redacted diagnostic through the normal Runner service logs. If the queue
+is still growing after the Monitor is healthy, stop and escalate rather than
+deleting `pending` or `dead-letter`; deletion would remove delivery evidence.
+The outbox directory and token-file ACLs, the active managed release, and a
+real replay on each target Runner remain HITL evidence. The two inventory
+confirmed targets for issue #3151 are `PROMEORUNNER-DT` and
+`DESKTOP-3J2K2PD`; no live replay is claimed until those checks are timestamped
+by the operator.
+
 ## Runner canary script (issue #6, using issue #7 HTTPS)
 
 After issue #7, the monitor can serve genuine HTTPS when it is started with
