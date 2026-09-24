@@ -385,7 +385,8 @@ function Clear-RunnerWizardMachineEnvironment {
         "RUNNER_OBSERVABILITY_INSTALL_ROOT",
         "RUNNER_OBSERVABILITY_ENDPOINT",
         "RUNNER_OBSERVABILITY_TOKEN_PATH",
-        "RUNNER_OBSERVABILITY_RUNNER_ID"
+        "RUNNER_OBSERVABILITY_RUNNER_ID",
+        "RUNNER_OBSERVABILITY_OUTBOX_ROOT"
     )) {
         [Environment]::SetEnvironmentVariable($name, $null, "Machine")
         if ($null -ne [Environment]::GetEnvironmentVariable($name, "Machine")) {

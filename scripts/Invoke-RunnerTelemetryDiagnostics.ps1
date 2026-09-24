@@ -91,7 +91,8 @@ $names = @(
     'RUNNER_OBSERVABILITY_INSTALL_ROOT',
     'RUNNER_OBSERVABILITY_ENDPOINT',
     'RUNNER_OBSERVABILITY_TOKEN_PATH',
-    'RUNNER_OBSERVABILITY_RUNNER_ID'
+    'RUNNER_OBSERVABILITY_RUNNER_ID',
+    'RUNNER_OBSERVABILITY_OUTBOX_ROOT'
 )
 $processValues = @{}
 foreach ($name in $names) {
@@ -153,6 +154,7 @@ try {
 $installRoot = [string]$processValues['RUNNER_OBSERVABILITY_INSTALL_ROOT']
 $endpoint = [string]$processValues['RUNNER_OBSERVABILITY_ENDPOINT']
 $tokenPath = [string]$processValues['RUNNER_OBSERVABILITY_TOKEN_PATH']
+$outboxRoot = [string]$processValues['RUNNER_OBSERVABILITY_OUTBOX_ROOT']
 $releaseFile = $null
 $revision = $null
 $releaseRoot = $null
@@ -249,6 +251,40 @@ if ($tokenPath -eq '<empty>') {
     }
 }
 
+if ($outboxRoot -eq '<empty>') {
+    Add-ConfigFailure 'outbox_root'
+    Write-Diag 'helper.outbox' 'FAIL' 'outbox_not_configured'
+} elseif (-not (Test-Path -LiteralPath $outboxRoot -PathType Container)) {
+    Add-ConfigFailure 'outbox_root_missing'
+    Write-Diag 'helper.outbox' 'FAIL' 'outbox_directory_missing_or_not_a_directory'
+} else {
+    Write-Diag 'helper.outbox' 'PASS' 'outbox_directory_exists'
+}
+
+$heartbeatConfigPath = if ($installRoot -ne '<empty>') {
+    Join-Path $installRoot 'heartbeat-config.json'
+} else {
+    $null
+}
+if ($null -ne $heartbeatConfigPath -and (Test-Path -LiteralPath $heartbeatConfigPath -PathType Leaf)) {
+    try {
+        $heartbeatConfig = Get-Content -LiteralPath $heartbeatConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        $pythonProperty = $heartbeatConfig.PSObject.Properties['python_executable']
+        $configuredPythonPath = if ($null -ne $pythonProperty) { [string]$pythonProperty.Value } else { '' }
+        if ([string]::IsNullOrWhiteSpace($configuredPythonPath) -or
+            -not (Test-Path -LiteralPath $configuredPythonPath -PathType Leaf)) {
+            Add-ConfigFailure 'configured_python'
+            Write-Diag 'helper.python.configured' 'FAIL' 'heartbeat_config_python_missing_or_not_a_file'
+        } else {
+            $pythonPath = (Resolve-Path -LiteralPath $configuredPythonPath -ErrorAction Stop).Path
+            Write-Diag 'helper.python.configured' 'PASS' 'heartbeat_config_python_resolved'
+        }
+    } catch {
+        Add-ConfigFailure 'configured_python'
+        Write-Diag 'helper.python.configured' 'FAIL' ('config_error_type={0}' -f $_.Exception.GetType().Name)
+    }
+}
+
 if ($null -eq $pythonPath) {
     Add-ConfigFailure 'python'
 } else {
@@ -260,7 +296,8 @@ foreach ($pathPair in @(
     @('path.install_root', $installRoot),
     @('path.current_release', $releaseFile),
     @('path.release_src', $srcPath),
-    @('path.token', $tokenPath)
+    @('path.token', $tokenPath),
+    @('path.outbox', $outboxRoot)
 )) {
     Write-PathCheck -Key $pathPair[0] -Path ([string]$pathPair[1])
     Write-AclCheck -Key $pathPair[0] -Path ([string]$pathPair[1])

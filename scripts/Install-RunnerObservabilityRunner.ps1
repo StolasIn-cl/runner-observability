@@ -48,6 +48,7 @@ if ([string]::IsNullOrWhiteSpace($StatePath)) {
     $StatePath = Join-Path $InstallRoot "state\heartbeat.json"
 }
 $configPath = Join-Path $InstallRoot "heartbeat-config.json"
+$outboxRoot = Join-Path $InstallRoot "telemetry-outbox"
 $runnerIdOverride = $null
 $parsedRunnerId = [guid]::Empty
 if (-not [string]::IsNullOrWhiteSpace($PSBoundParameters["RunnerId"]) -and
@@ -454,6 +455,7 @@ function Invoke-RunnerConfigure {
     }
     New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
     New-Item -ItemType Directory -Path (Split-Path -Parent $StatePath) -Force | Out-Null
+    New-Item -ItemType Directory -Path $outboxRoot -Force | Out-Null
     Set-RunnerHeartbeatDirectoryTraverseAcl `
         -Path (Split-Path -Parent $TokenPath) `
         -ServiceAccount $ServiceAccount `
@@ -466,7 +468,11 @@ function Invoke-RunnerConfigure {
     }
     $configuration = New-RunnerHeartbeatConfiguration -RunnerIdValue $runnerIdValue
     Write-RunnerHeartbeatConfigAtomic -Path $configPath -Configuration $configuration
-    Set-RunnerHeartbeatFileAcl -Path $configPath -ServiceAccount $ServiceAccount -Access "R"
+    Set-RunnerHeartbeatFileAcl `
+        -Path $configPath `
+        -ServiceAccount $ServiceAccount `
+        -AdditionalReadAccount $RunnerAccount `
+        -Access "R"
     Set-RunnerHeartbeatFileAcl `
         -Path $TokenPath `
         -ServiceAccount $ServiceAccount `
@@ -474,6 +480,10 @@ function Invoke-RunnerConfigure {
         -Access "R"
     Set-RunnerHeartbeatFileAcl -Path $RunnerId -ServiceAccount $ServiceAccount -Access "R"
     Set-RunnerHeartbeatDirectoryAcl -Path (Split-Path -Parent $StatePath) -ServiceAccount $ServiceAccount
+    Set-RunnerObservabilityTelemetryOutboxDirectoryAcl `
+        -Path $outboxRoot `
+        -ServiceAccount $ServiceAccount `
+        -RunnerAccount $RunnerAccount
     $pythonDirectory = Split-Path -Parent $PythonPath
     Set-RunnerObservabilityRuntimeParentTraverseAcl -Path $PythonPath -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityRuntimeFileAcl -Path $PythonPath -ServiceAccount $ServiceAccount
@@ -492,6 +502,7 @@ function Invoke-RunnerConfigure {
         RUNNER_OBSERVABILITY_ENDPOINT = $Endpoint
         RUNNER_OBSERVABILITY_TOKEN_PATH = $TokenPath
         RUNNER_OBSERVABILITY_RUNNER_ID = $runnerIdValue
+        RUNNER_OBSERVABILITY_OUTBOX_ROOT = $outboxRoot
     } -AllowMachineEnvironmentChange | Out-Null
     Register-RunnerHeartbeatService -ServiceName $ServiceName -PythonPath $PythonPath -ConfigPath $configPath -ModulePath $releaseSource -ServiceAccount $ServiceAccount
     Write-Output ("runner_id_path={0}" -f $RunnerId)
@@ -512,7 +523,11 @@ function Invoke-RunnerRepairPermissions {
     }
     Resolve-RunnerEndpointForRepair
     Assert-RunnerEndpoint
-    Set-RunnerHeartbeatFileAcl -Path $configPath -ServiceAccount $ServiceAccount -Access "R"
+    Set-RunnerHeartbeatFileAcl `
+        -Path $configPath `
+        -ServiceAccount $ServiceAccount `
+        -AdditionalReadAccount $runnerAccountValue `
+        -Access "R"
     try {
         $existingConfig = Get-Content -LiteralPath $configPath -Raw -ErrorAction Stop | ConvertFrom-Json
         if ($null -eq $existingConfig) {
@@ -531,7 +546,11 @@ function Invoke-RunnerRepairPermissions {
         }
         throw (New-RunnerRoleError -Reason "service_config_write_failed")
     }
-    Set-RunnerHeartbeatFileAcl -Path $configPath -ServiceAccount $ServiceAccount -Access "R"
+    Set-RunnerHeartbeatFileAcl `
+        -Path $configPath `
+        -ServiceAccount $ServiceAccount `
+        -AdditionalReadAccount $runnerAccountValue `
+        -Access "R"
     Set-RunnerHeartbeatDirectoryTraverseAcl `
         -Path (Split-Path -Parent $TokenPath) `
         -ServiceAccount $ServiceAccount `
@@ -545,12 +564,20 @@ function Invoke-RunnerRepairPermissions {
         Set-RunnerHeartbeatFileAcl -Path $RunnerId -ServiceAccount $ServiceAccount -Access "R"
     }
     Set-RunnerHeartbeatDirectoryAcl -Path (Split-Path -Parent $StatePath) -ServiceAccount $ServiceAccount
+    New-Item -ItemType Directory -Path $outboxRoot -Force | Out-Null
+    Set-RunnerObservabilityTelemetryOutboxDirectoryAcl `
+        -Path $outboxRoot `
+        -ServiceAccount $ServiceAccount `
+        -RunnerAccount $runnerAccountValue
     $pythonDirectory = Split-Path -Parent $PythonPath
     Set-RunnerObservabilityRuntimeParentTraverseAcl -Path $PythonPath -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityRuntimeFileAcl -Path $PythonPath -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityRuntimeAcl -Path $pythonDirectory -ServiceAccount $ServiceAccount
     Set-RunnerObservabilityMachineEnvironment `
-        -Values @{ RUNNER_OBSERVABILITY_ENDPOINT = $Endpoint } `
+        -Values @{
+            RUNNER_OBSERVABILITY_ENDPOINT = $Endpoint
+            RUNNER_OBSERVABILITY_OUTBOX_ROOT = $outboxRoot
+        } `
         -AllowMachineEnvironmentChange | Out-Null
     Write-Output "reason=permissions_repaired"
 }
@@ -629,6 +656,8 @@ catch {
         "runner_account_discovery_failed",
         "file_acl_failed",
         "directory_acl_failed",
+        "outbox_directory_create_failed",
+        "outbox_directory_acl_failed",
         "runtime_path_missing",
         "runtime_acl_failed",
         "runtime_parent_acl_failed",

@@ -60,6 +60,7 @@ class BootstrapModuleStaticContractTests(unittest.TestCase):
             "New-RunnerObservabilityTokenFile",
             "Set-RunnerObservabilityFileAcl",
             "Set-RunnerObservabilityDirectoryAcl",
+            "Set-RunnerObservabilityTelemetryOutboxDirectoryAcl",
             "Set-RunnerObservabilityRuntimeAcl",
             "Set-RunnerObservabilityRuntimeFileAcl",
             "Set-RunnerObservabilityRuntimeParentTraverseAcl",
@@ -120,6 +121,17 @@ class BootstrapModuleStaticContractTests(unittest.TestCase):
             self.module_text,
             r"(?i)(ServiceAccount[^\r\n]{0,100}FullControl|\{0\}:.*\(F\))",
         )
+
+    def test_telemetry_outbox_acl_grants_runner_modify_without_secret_acl_expansion(self) -> None:
+        self.assertIn('RUNNER_OBSERVABILITY_OUTBOX_ROOT', self.module_text)
+        outbox_acl = self.module_text.split(
+            'function Set-RunnerObservabilityTelemetryOutboxDirectoryAcl', 1
+        )[1].split('function Get-RunnerObservabilityCurrentAccount', 1)[0]
+        self.assertIn('RunnerAccount', outbox_acl)
+        self.assertIn(':(OI)(CI)(M)', outbox_acl)
+        self.assertIn('SYSTEM:(OI)(CI)(F)', outbox_acl)
+        self.assertIn('Administrators:(OI)(CI)(F)', outbox_acl)
+        self.assertNotIn('monitor.key', outbox_acl.lower())
 
     def test_runtime_acl_removes_inheritance_before_granting_read_execute(self) -> None:
         runtime_acl = self.module_text.split(
@@ -664,6 +676,10 @@ class RunnerRoleScriptStaticContractTests(unittest.TestCase):
         self.assertIn("Get-RunnerReleaseSource", self.script_text)
         self.assertIn("-ModulePath $releaseSource", self.script_text)
         self.assertIn("Write-RunnerHeartbeatConfigAtomic", self.script_text)
+        self.assertIn("telemetry-outbox", self.script_text)
+        self.assertIn("Set-RunnerObservabilityTelemetryOutboxDirectoryAcl", self.script_text)
+        self.assertIn("RUNNER_OBSERVABILITY_OUTBOX_ROOT", self.script_text)
+        self.assertIn("-AdditionalReadAccount $RunnerAccount", self.script_text)
         self.assertNotRegex(self.script_text, r"(?im)^\s*\[string\]\$Token\b")
         self.assertNotRegex(self.script_text, r"(?i)--token\s+\$|--token\s+\S+")
         self.assertNotIn("monitor.key", self.lowered.replace('"monitor.key"', ""))
@@ -721,6 +737,8 @@ class RunnerRoleScriptStaticContractTests(unittest.TestCase):
         self.assertIn("Assert-RunnerEndpoint", repair)
         self.assertIn("Write-RunnerHeartbeatConfigAtomic", repair)
         self.assertIn("Set-RunnerObservabilityMachineEnvironment", repair)
+        self.assertIn("Set-RunnerObservabilityTelemetryOutboxDirectoryAcl", repair)
+        self.assertIn("RUNNER_OBSERVABILITY_OUTBOX_ROOT", repair)
 
     def test_docs_describe_monitor_then_runner_order(self) -> None:
         combined = (self.readme_text + "\n" + self.runbook_text).lower()

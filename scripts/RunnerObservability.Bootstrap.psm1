@@ -2,7 +2,8 @@ $script:RunnerObservabilityEnvironmentNames = @(
     "RUNNER_OBSERVABILITY_INSTALL_ROOT",
     "RUNNER_OBSERVABILITY_ENDPOINT",
     "RUNNER_OBSERVABILITY_TOKEN_PATH",
-    "RUNNER_OBSERVABILITY_RUNNER_ID"
+    "RUNNER_OBSERVABILITY_RUNNER_ID",
+    "RUNNER_OBSERVABILITY_OUTBOX_ROOT"
 )
 
 function New-RunnerObservabilityStableError {
@@ -342,6 +343,41 @@ function Set-RunnerObservabilityDirectoryAcl {
         $serviceGrant,
         "/c"
     )
+}
+
+function Set-RunnerObservabilityTelemetryOutboxDirectoryAcl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceAccount,
+        [Parameter(Mandatory = $true)][string]$RunnerAccount
+    )
+
+    try {
+        New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null
+    }
+    catch {
+        throw (New-RunnerObservabilityStableError -Reason "outbox_directory_create_failed")
+    }
+
+    $serviceGrant = "{0}:(OI)(CI)(M)" -f $ServiceAccount
+    $grants = @(
+        "SYSTEM:(OI)(CI)(F)",
+        "Administrators:(OI)(CI)(F)",
+        $serviceGrant
+    )
+    if (-not [string]::IsNullOrWhiteSpace($RunnerAccount) -and
+        ($RunnerAccount -ine $ServiceAccount) -and
+        ($RunnerAccount -ine "SYSTEM") -and
+        ($RunnerAccount -ine "Administrators")) {
+        $grants += "{0}:(OI)(CI)(M)" -f $RunnerAccount
+    }
+    $argumentList = @(
+        $Path,
+        "/inheritance:r",
+        "/grant:r"
+    ) + $grants + @("/c")
+    Invoke-RunnerObservabilityBootstrapNativeCommand -FilePath "icacls.exe" -FailureReason "outbox_directory_acl_failed" -ArgumentList $argumentList
 }
 
 function Get-RunnerObservabilityCurrentAccount {
@@ -803,6 +839,7 @@ Export-ModuleMember -Function @(
     "New-RunnerObservabilityTokenFile",
     "Set-RunnerObservabilityFileAcl",
     "Set-RunnerObservabilityDirectoryAcl",
+    "Set-RunnerObservabilityTelemetryOutboxDirectoryAcl",
     "Set-RunnerObservabilityRuntimeAcl",
     "Set-RunnerObservabilityRuntimeParentTraverseAcl",
     "Set-RunnerObservabilityRuntimeFileAcl",

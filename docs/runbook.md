@@ -556,7 +556,10 @@ path: the job result is not changed by telemetry persistence or replay
 failure. The outbox root is a protected Runner-owned data directory, separate
 from the secrets root. Grant the Runner service account access only to the
 directories required by the installed release and keep the token file in the
-existing protected secrets location.
+existing protected secrets location. `Configure` and `RepairPermissions`
+derive this directory below the managed install root, grant the direct
+`Runner.Listener.exe` account Modify access, and publish its location as
+`RUNNER_OBSERVABILITY_OUTBOX_ROOT`.
 
 Use `--outbox-dir` with `emit` to enqueue the validated event before attempting
 delivery. A successful 2xx response removes the event from `pending`; a
@@ -572,8 +575,15 @@ The explicit replay command is `flush`. It reads the token from
 `--outbox-dir` as the emitting agent:
 
 ```powershell
-$outboxRoot = "C:\runner-observability\telemetry-outbox"
-$config = Get-Content -Raw "C:\runner-observability\heartbeat-config.json" |
+$installRoot = [Environment]::GetEnvironmentVariable(
+    'RUNNER_OBSERVABILITY_INSTALL_ROOT', 'Machine')
+$outboxRoot = [Environment]::GetEnvironmentVariable(
+    'RUNNER_OBSERVABILITY_OUTBOX_ROOT', 'Machine')
+if ([string]::IsNullOrWhiteSpace($installRoot) -or
+    [string]::IsNullOrWhiteSpace($outboxRoot)) {
+    throw 'runner observability machine configuration is incomplete'
+}
+$config = Get-Content -Raw (Join-Path $installRoot 'heartbeat-config.json') |
     ConvertFrom-Json
 
 python -m runner_observability flush `

@@ -17,6 +17,8 @@ class OutboxRunbookTests(unittest.TestCase):
             "--outbox-dir",
             "flush",
             "--token-file",
+            "RUNNER_OBSERVABILITY_OUTBOX_ROOT",
+            "RUNNER_OBSERVABILITY_INSTALL_ROOT",
             "pending",
             "dead-letter",
             "1,000",

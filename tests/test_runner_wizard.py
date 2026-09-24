@@ -199,6 +199,7 @@ class RunnerWizardContractTests(unittest.TestCase):
             "RUNNER_OBSERVABILITY_ENDPOINT",
             "RUNNER_OBSERVABILITY_TOKEN_PATH",
             "RUNNER_OBSERVABILITY_RUNNER_ID",
+            "RUNNER_OBSERVABILITY_OUTBOX_ROOT",
         ):
             with self.subTest(name=name):
                 self.assertIn(name, self.text)
