@@ -563,8 +563,8 @@ delivery. A successful 2xx response removes the event from `pending`; a
 transient network or HTTP failure leaves it there for a later bounded replay;
 an authenticated or otherwise permanent delivery failure moves it to
 `dead-letter` with a stable reason. The default limits are 1,000 pending
-events, 32 MiB total pending JSON, and at most 100 events or 5 seconds per
-drain. Operators must not widen these limits on a live Runner without a
+events, 32 MiB total outbox JSON across `pending` and `dead-letter`, and at
+most 100 events or 5 seconds per drain. Operators must not widen these limits on a live Runner without a
 separately reviewed capacity decision.
 
 The explicit replay command is `flush`. It reads the token from

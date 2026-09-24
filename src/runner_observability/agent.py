@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 from .contracts import ValidationError, validate_event
 from .credentials import CredentialFileError, read_token_file
-from .outbox import DurableOutbox, OutboxLimits
+from .outbox import DurableOutbox, OutboxLimits, json_payload
 
 
 MAX_RETRIES = 2
@@ -55,6 +55,7 @@ def deliver_event(
     diagnostic: Diagnostic | None = None,
     resolver: Resolver | None = None,
     connector: Connector | None = None,
+    max_duration_seconds: float = MAX_DELIVERY_SECONDS,
 ) -> DeliveryResult:
     """Validate and deliver one event without ever surfacing a delivery failure.
 
@@ -70,18 +71,21 @@ def deliver_event(
         report(f"telemetry_event_rejected reason={error.reason}")
         return result
 
-    body = json.dumps(_json_payload(validated.payload), ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    body = json.dumps(json_payload(validated.payload), ensure_ascii=True, separators=(",", ":")).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {bearer_token}",
         "Content-Type": "application/json",
         "Content-Length": str(len(body)),
     }
     started_at = clock()
+    delivery_budget = min(MAX_DELIVERY_SECONDS, max_duration_seconds)
+    if delivery_budget <= 0:
+        return DeliveryResult(False, 0, "temporary_network_failure")
     attempts = 0
     reason = "temporary_network_failure"
     http_status: int | None = None
     while True:
-        remaining = MAX_DELIVERY_SECONDS - (clock() - started_at)
+        remaining = delivery_budget - (clock() - started_at)
         if attempts and remaining <= 0:
             result = DeliveryResult(False, attempts, reason, http_status)
             report(f"telemetry_delivery_failed reason={reason}")
@@ -117,7 +121,7 @@ def deliver_event(
             result = DeliveryResult(False, attempts, reason, http_status)
             report(f"telemetry_delivery_failed reason={reason}")
             return result
-        remaining = MAX_DELIVERY_SECONDS - (clock() - started_at)
+        remaining = delivery_budget - (clock() - started_at)
         if remaining <= 0:
             result = DeliveryResult(False, attempts, reason, http_status)
             report(f"telemetry_delivery_failed reason={reason}")
@@ -249,7 +253,20 @@ def _drain_outbox(
     sleeper: Sleeper,
     diagnostic: Diagnostic,
 ) -> int:
+    drain_started: float | None = None
+
+    def bounded_clock() -> float:
+        nonlocal drain_started
+        now = clock()
+        if drain_started is None:
+            drain_started = now
+        return now
+
     def deliver(event: object, event_endpoint: str, event_token: str) -> DeliveryResult:
+        assert drain_started is not None
+        remaining = outbox.limits.max_drain_seconds - (bounded_clock() - drain_started)
+        if remaining <= 0:
+            return DeliveryResult(False, 0, "temporary_network_failure")
         return deliver_event(
             event,
             event_endpoint,
@@ -258,9 +275,10 @@ def _drain_outbox(
             clock=clock,
             sleeper=sleeper,
             diagnostic=diagnostic,
+            max_duration_seconds=remaining,
         )
 
-    outbox.drain(deliver, endpoint, token, clock=clock, sleeper=sleeper)
+    outbox.drain(deliver, endpoint, token, clock=bounded_clock, sleeper=sleeper)
     return 0
 
 
@@ -419,12 +437,3 @@ def _wait_for_socket(sock: Any, deadline: float, *, write: bool) -> None:
     readable, writable, _ = select.select([sock] if not write else [], [sock] if write else [], [], _remaining(deadline))
     if not readable and not writable:
         raise TimeoutError("delivery_deadline_elapsed")
-
-
-def _json_payload(value: object) -> object:
-    """Copy the immutable validated payload into JSON-compatible primitives."""
-    if isinstance(value, Mapping):
-        return {key: _json_payload(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_json_payload(item) for item in value]
-    return value

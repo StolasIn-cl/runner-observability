@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
+from threading import Event
 import unittest
+from unittest.mock import patch
 
 from runner_observability.agent import DeliveryResult
 from runner_observability.outbox import DurableOutbox, OutboxLimits
@@ -87,6 +90,75 @@ class OutboxStorageTests(unittest.TestCase):
         self.assertEqual(diagnostics, ["outbox_corrupt_event"])
         self.assertNotIn("secret-token", "\n".join(diagnostics))
         self.assertTrue(corrupt_file.is_file())
+
+    def test_tampered_pending_envelope_and_filename_are_skipped(self) -> None:
+        diagnostics: list[str] = []
+        outbox = DurableOutbox(self.root, diagnostic=diagnostics.append)
+        outbox.enqueue(heartbeat(), queued_at="2026-09-24T01:00:00.000Z")
+        tampered_file = self.root / "pending" / "wrong-name.json"
+        tampered_file.write_text(
+            json.dumps(
+                {
+                    "queued_at": "2026-09-24T02:00:00.000Z",
+                    "event": heartbeat(event_id="10000000-0000-4000-8000-000000000002"),
+                    "token": "secret-token",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        pending, corrupt = outbox.pending_events()
+
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(corrupt, 1)
+        self.assertEqual(diagnostics, ["outbox_corrupt_event"])
+        self.assertNotIn("secret-token", "\n".join(diagnostics))
+        self.assertTrue(tampered_file.is_file())
+
+    def test_queued_at_must_be_an_iso_timestamp(self) -> None:
+        outbox = DurableOutbox(self.root)
+
+        result = outbox.enqueue(heartbeat(), queued_at="secret-token")
+
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.reason, "outbox_invalid_timestamp")
+        self.assertFalse((self.root / "pending").exists())
+
+    def test_enqueue_serializes_capacity_check_and_commit(self) -> None:
+        outbox = DurableOutbox(self.root, limits=OutboxLimits(max_events=1))
+        first_capacity_check = Event()
+        release_first_capacity_check = Event()
+        capacity_calls = 0
+        real_capacity_usage = outbox._capacity_usage
+
+        def blocking_capacity_usage() -> tuple[int, int]:
+            nonlocal capacity_calls
+            capacity_calls += 1
+            if capacity_calls == 1:
+                first_capacity_check.set()
+                self.assertTrue(release_first_capacity_check.wait(2.0))
+            return real_capacity_usage()
+
+        with patch.object(outbox, "_capacity_usage", side_effect=blocking_capacity_usage):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(
+                    outbox.enqueue,
+                    heartbeat(event_id="10000000-0000-4000-8000-000000000001"),
+                    queued_at="2026-09-24T01:00:00.000Z",
+                )
+                self.assertTrue(first_capacity_check.wait(2.0))
+                second = executor.submit(
+                    outbox.enqueue,
+                    heartbeat(event_id="10000000-0000-4000-8000-000000000002"),
+                    queued_at="2026-09-24T02:00:00.000Z",
+                )
+                try:
+                    self.assertFalse(second.done())
+                finally:
+                    release_first_capacity_check.set()
+
+                self.assertEqual(first.result().status, "queued")
+                self.assertEqual(second.result().status, "rejected")
 
     def test_event_count_capacity_rejects_without_removing_existing_events(self) -> None:
         outbox = DurableOutbox(self.root, limits=OutboxLimits(max_events=1))
@@ -178,6 +250,45 @@ class OutboxStorageTests(unittest.TestCase):
         self.assertNotIn("secret-token", dead_text)
         self.assertNotIn("https://monitor.invalid", dead_text)
 
+    def test_dead_letter_reconciliation_prevents_retry_after_source_unlink_failure(self) -> None:
+        outbox = DurableOutbox(self.root)
+        outbox.enqueue(heartbeat(), queued_at="2026-09-24T01:00:00.000Z")
+        pending_file = next((self.root / "pending").glob("*.json"))
+        original_unlink = Path.unlink
+
+        def fail_pending_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            if path == pending_file:
+                raise OSError("simulated_unlink_failure")
+            original_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_pending_unlink):
+            first = outbox.drain(
+                lambda _event, _endpoint, _token: DeliveryResult(
+                    False, 1, "rejected_http_response", 401
+                ),
+                "https://monitor.invalid/v1/events",
+                "secret-token",
+            )
+
+        self.assertEqual(first.retained, 1)
+        self.assertTrue(pending_file.is_file())
+        delivery_calls = 0
+
+        def must_not_redeliver(_event: object, _endpoint: str, _token: str) -> DeliveryResult:
+            nonlocal delivery_calls
+            delivery_calls += 1
+            return DeliveryResult(True, 1, http_status=202)
+
+        second = outbox.drain(
+            must_not_redeliver,
+            "https://monitor.invalid/v1/events",
+            "secret-token",
+        )
+
+        self.assertEqual(delivery_calls, 0)
+        self.assertEqual(second.delivered, 0)
+        self.assertFalse(pending_file.exists())
+
     def test_corrupt_file_does_not_block_healthy_event_drain(self) -> None:
         diagnostics: list[str] = []
         outbox = DurableOutbox(self.root, diagnostic=diagnostics.append)
@@ -225,6 +336,33 @@ class OutboxStorageTests(unittest.TestCase):
             "https://monitor.invalid/v1/events",
             "secret-token",
             clock=lambda: next(clock_values),
+        )
+
+        self.assertEqual(result.delivered, 0)
+        self.assertEqual(result.retained, 1)
+        self.assertEqual(len(list((self.root / "pending").glob("*.json"))), 1)
+
+    def test_drain_does_not_remove_event_when_delivery_exceeds_budget(self) -> None:
+        outbox = DurableOutbox(
+            self.root,
+            limits=OutboxLimits(max_drain_events=100, max_drain_seconds=0.5),
+        )
+        outbox.enqueue(heartbeat(), queued_at="2026-09-24T01:00:00.000Z")
+        now = 0.0
+
+        def clock() -> float:
+            return now
+
+        def slow_delivery(_event: object, _endpoint: str, _token: str) -> DeliveryResult:
+            nonlocal now
+            now = 1.0
+            return DeliveryResult(True, 1, http_status=202)
+
+        result = outbox.drain(
+            slow_delivery,
+            "https://monitor.invalid/v1/events",
+            "secret-token",
+            clock=clock,
         )
 
         self.assertEqual(result.delivered, 0)

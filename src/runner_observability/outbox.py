@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -76,11 +77,19 @@ class DurableOutbox:
     def enqueue(self, event: object, *, queued_at: str | None = None) -> EnqueueResult:
         """Validate and atomically persist one event without storing credentials."""
         try:
+            with self._exclusive_lock():
+                return self._enqueue_locked(event, queued_at=queued_at)
+        except OSError:
+            self._diagnostic("outbox_lock_failed")
+            return EnqueueResult("", "rejected", "outbox_storage_unavailable")
+
+    def _enqueue_locked(self, event: object, *, queued_at: str | None = None) -> EnqueueResult:
+        try:
             validated = validate_event(event)
         except ValidationError as error:
             return EnqueueResult("", "rejected", error.reason)
 
-        event_payload = _json_payload(validated.payload)
+        event_payload = json_payload(validated.payload)
         event_id = validated.event_id
         pending_path = self.pending_root / f"{event_id}.json"
         dead_letter_path = self.dead_letter_root / f"{event_id}.json"
@@ -134,7 +143,20 @@ class DurableOutbox:
         """Return valid pending envelopes and the number of corrupt files skipped."""
         valid: list[tuple[Path, dict[str, object]]] = []
         corrupt = 0
+        dead_letter_ids = {
+            path.stem
+            for path in self._json_files(self.dead_letter_root)
+            if self._read_envelope(path, allow_dead_letter=True) is not None
+        }
         for path in self._json_files(self.pending_root):
+            if path.stem in dead_letter_ids:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    self._diagnostic("outbox_reconcile_failed")
+                continue
             envelope = self._read_envelope(path)
             if envelope is None:
                 corrupt += 1
@@ -154,6 +176,28 @@ class DurableOutbox:
         sleeper: Callable[[float], None] = time.sleep,
     ) -> DrainResult:
         """Deliver pending events within the configured count/time budget."""
+        try:
+            with self._exclusive_lock():
+                return self._drain_locked(
+                    deliver,
+                    endpoint,
+                    token,
+                    clock=clock,
+                    sleeper=sleeper,
+                )
+        except OSError:
+            self._diagnostic("outbox_lock_failed")
+            return DrainResult(0, 0, 0, 0)
+
+    def _drain_locked(
+        self,
+        deliver: Callable[[object, str, str], Any],
+        endpoint: str,
+        token: str,
+        *,
+        clock: Callable[[], float],
+        sleeper: Callable[[float], None],
+    ) -> DrainResult:
         del sleeper  # The bounded delivery function owns its retry/backoff policy.
         started_at = clock()
         pending, corrupt = self.pending_events()
@@ -169,6 +213,9 @@ class DurableOutbox:
                 result = deliver(event, endpoint, token)
             except Exception:
                 self._diagnostic("outbox_delivery_failed")
+                retained += 1
+                continue
+            if clock() - started_at >= self.limits.max_drain_seconds:
                 retained += 1
                 continue
             if result.delivered:
@@ -200,6 +247,25 @@ class DurableOutbox:
         destination = self.dead_letter_root / f"{event_id}.json"
         dead_letter = dict(envelope)
         dead_letter["dead_letter_reason"] = reason
+        if destination.is_file():
+            existing = self._read_envelope(destination, allow_dead_letter=True)
+            if existing is None:
+                self._diagnostic("outbox_dead_letter_conflict")
+                return False
+            if (
+                existing["event"] != envelope["event"]
+                or existing.get("dead_letter_reason") != reason
+            ):
+                self._diagnostic("outbox_dead_letter_conflict")
+                return False
+            try:
+                pending_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                self._diagnostic("outbox_pending_cleanup_failed")
+                return False
+            return True
         try:
             self.dead_letter_root.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
@@ -217,6 +283,8 @@ class DurableOutbox:
             temporary_path = None
             pending_path.unlink()
             return True
+        except FileNotFoundError:
+            return True
         except (OSError, TypeError):
             self._diagnostic("outbox_dead_letter_failed")
             return False
@@ -231,7 +299,9 @@ class DurableOutbox:
         for path in paths:
             if not path.is_file():
                 continue
-            envelope = self._read_envelope(path)
+            envelope = self._read_envelope(
+                path, allow_dead_letter=path.parent == self.dead_letter_root
+            )
             if envelope is None:
                 return {}
             event = envelope.get("event")
@@ -247,32 +317,83 @@ class DurableOutbox:
                 total_bytes += path.stat().st_size
         return count, total_bytes
 
-    def _read_envelope(self, path: Path) -> dict[str, object] | None:
+    def _read_envelope(
+        self, path: Path, *, allow_dead_letter: bool = False
+    ) -> dict[str, object] | None:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, Mapping) or not isinstance(raw.get("queued_at"), str):
                 return None
+            allowed_keys = {"queued_at", "event"}
+            if allow_dead_letter:
+                allowed_keys.add("dead_letter_reason")
+            if set(raw) != allowed_keys or _queued_timestamp(raw["queued_at"]) is None:
+                return None
             event = raw.get("event")
             validated = validate_event(event)
-            normalized = _json_payload(validated.payload)
+            if path.stem != validated.event_id:
+                return None
+            if allow_dead_letter and raw["dead_letter_reason"] not in _KNOWN_DELIVERY_REASONS:
+                return None
+            normalized = json_payload(validated.payload)
             if normalized != event:
                 return None
-            return {"queued_at": raw["queued_at"], "event": normalized}
+            envelope: dict[str, object] = {"queued_at": raw["queued_at"], "event": normalized}
+            if allow_dead_letter:
+                envelope["dead_letter_reason"] = raw["dead_letter_reason"]
+            return envelope
         except (OSError, UnicodeError, json.JSONDecodeError, ValidationError, TypeError, ValueError):
             return None
 
-    @staticmethod
-    def _json_files(directory: Path) -> list[Path]:
+    @contextmanager
+    def _exclusive_lock(self):
+        self.root.mkdir(parents=True, exist_ok=True)
+        lock_path = self.root / ".outbox.lock"
+        with lock_path.open("a+b") as handle:
+            handle.write(b"0")
+            handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _json_files(self, directory: Path) -> list[Path]:
         try:
             return sorted(path for path in directory.glob("*.json") if path.is_file())
         except OSError:
+            self._diagnostic("outbox_list_failed")
             return []
 
 
 def _queued_timestamp(value: str | None) -> str | None:
     if value is None:
         return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    return value if isinstance(value, str) and value else None
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return value
 
 
 _TRANSIENT_REASONS = frozenset({"temporary_network_failure", "temporary_http_failure"})
@@ -291,11 +412,11 @@ def _encode(value: Mapping[str, object]) -> bytes:
     return (json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def _json_payload(value: object) -> object:
+def json_payload(value: object) -> object:
     if isinstance(value, Mapping):
-        return {key: _json_payload(item) for key, item in value.items()}
+        return {key: json_payload(item) for key, item in value.items()}
     if isinstance(value, tuple):
-        return [_json_payload(item) for item in value]
+        return [json_payload(item) for item in value]
     return value
 
 
