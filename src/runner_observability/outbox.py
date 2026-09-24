@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import Any
 
 from .contracts import ValidationError, validate_event
@@ -44,6 +45,16 @@ class EnqueueResult:
     event_id: str
     status: str
     reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DrainResult:
+    """Counts from one bounded outbox drain pass."""
+
+    delivered: int
+    retained: int
+    dead_lettered: int
+    corrupt: int
 
 
 class DurableOutbox:
@@ -133,6 +144,89 @@ class DurableOutbox:
         valid.sort(key=lambda item: (str(item[1]["queued_at"]), str(item[1]["event"]["event_id"])))
         return valid, corrupt
 
+    def drain(
+        self,
+        deliver: Callable[[object, str, str], Any],
+        endpoint: str,
+        token: str,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> DrainResult:
+        """Deliver pending events within the configured count/time budget."""
+        del sleeper  # The bounded delivery function owns its retry/backoff policy.
+        started_at = clock()
+        pending, corrupt = self.pending_events()
+        delivered = 0
+        retained = 0
+        dead_lettered = 0
+        for index, (path, envelope) in enumerate(pending):
+            if index >= self.limits.max_drain_events or clock() - started_at >= self.limits.max_drain_seconds:
+                retained += len(pending) - index
+                break
+            event = envelope["event"]
+            try:
+                result = deliver(event, endpoint, token)
+            except Exception:
+                self._diagnostic("outbox_delivery_failed")
+                retained += 1
+                continue
+            if result.delivered:
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    self._diagnostic("outbox_remove_failed")
+                    retained += 1
+                else:
+                    delivered += 1
+                continue
+            reason = _safe_delivery_reason(getattr(result, "reason", None))
+            if reason in _TRANSIENT_REASONS:
+                retained += 1
+                continue
+            if self._move_to_dead_letter(path, envelope, reason):
+                dead_lettered += 1
+            else:
+                retained += 1
+        return DrainResult(delivered, retained, dead_lettered, corrupt)
+
+    def _move_to_dead_letter(
+        self, pending_path: Path, envelope: dict[str, object], reason: str
+    ) -> bool:
+        temporary_path: Path | None = None
+        event_id = str(envelope["event"]["event_id"])
+        destination = self.dead_letter_root / f"{event_id}.json"
+        dead_letter = dict(envelope)
+        dead_letter["dead_letter_reason"] = reason
+        try:
+            self.dead_letter_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=self.dead_letter_root,
+                prefix=f".{event_id}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                temporary.write(_encode(dead_letter))
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_path, destination)
+            temporary_path = None
+            pending_path.unlink()
+            return True
+        except (OSError, TypeError):
+            self._diagnostic("outbox_dead_letter_failed")
+            return False
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass
+
     def _existing_event(self, *paths: Path) -> dict[str, object] | None:
         for path in paths:
             if not path.is_file():
@@ -179,6 +273,18 @@ def _queued_timestamp(value: str | None) -> str | None:
     if value is None:
         return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     return value if isinstance(value, str) and value else None
+
+
+_TRANSIENT_REASONS = frozenset({"temporary_network_failure", "temporary_http_failure"})
+_KNOWN_DELIVERY_REASONS = _TRANSIENT_REASONS | frozenset(
+    {"rejected_http_response", "transport_failure", "delivery_failed"}
+)
+
+
+def _safe_delivery_reason(reason: object) -> str:
+    if isinstance(reason, str) and reason in _KNOWN_DELIVERY_REASONS:
+        return reason
+    return "delivery_failed"
 
 
 def _encode(value: Mapping[str, object]) -> bytes:
