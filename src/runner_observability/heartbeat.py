@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 
 from .agent import DeliveryResult, deliver_event
 from .credentials import CredentialFileError, read_token_file
+from .outbox import DurableOutbox
 
 
 HEARTBEAT_EVENT_TYPE = "runner.heartbeat"
@@ -75,6 +76,7 @@ class HeartbeatConfig:
     interval_seconds: int = DEFAULT_HEARTBEAT_INTERVAL_SECONDS
     network_poll_seconds: int = DEFAULT_NETWORK_POLL_SECONDS
     allow_insecure_http: bool = False
+    outbox_dir: str | None = None
 
     _FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
@@ -88,6 +90,7 @@ class HeartbeatConfig:
             "interval_seconds",
             "network_poll_seconds",
             "allow_insecure_http",
+            "outbox_dir",
         }
     )
 
@@ -95,6 +98,10 @@ class HeartbeatConfig:
         for value in (self.endpoint, self.token_file, self.runner_id, self.state_file, self.producer_id, self.service_name, self.python_executable):
             if not isinstance(value, str) or not value.strip():
                 raise HeartbeatConfigError("invalid_heartbeat_configuration")
+        if self.outbox_dir is not None and (
+            not isinstance(self.outbox_dir, str) or not self.outbox_dir.strip()
+        ):
+            raise HeartbeatConfigError("invalid_heartbeat_configuration")
         try:
             parsed = urlsplit(self.endpoint)
             parsed.port  # Force validation of an explicit port at config load.
@@ -128,6 +135,7 @@ class HeartbeatConfig:
             "interval_seconds": DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
             "network_poll_seconds": DEFAULT_NETWORK_POLL_SECONDS,
             "allow_insecure_http": False,
+            "outbox_dir": None,
         }
         values.update(raw)
         for required in ("endpoint", "token_file", "runner_id", "state_file"):
@@ -147,7 +155,7 @@ class HeartbeatConfig:
         return cls.from_mapping(raw)
 
     def to_mapping(self) -> dict[str, Any]:
-        return {
+        mapping = {
             "endpoint": self.endpoint,
             "token_file": self.token_file,
             "runner_id": self.runner_id,
@@ -159,6 +167,9 @@ class HeartbeatConfig:
             "network_poll_seconds": self.network_poll_seconds,
             "allow_insecure_http": self.allow_insecure_http,
         }
+        if self.outbox_dir is not None:
+            mapping["outbox_dir"] = self.outbox_dir
+        return mapping
 
     def write_atomic(self, path: Path | str) -> None:
         target = Path(path)
@@ -387,6 +398,11 @@ class HeartbeatLoop:
         self._status_path = Path(config.state_file).with_name("heartbeat-status.json")
         self._last_success_at = self._load_last_success()
         self._event_endpoint = _canonical_event_endpoint(config.endpoint)
+        self._outbox = (
+            DurableOutbox(config.outbox_dir, diagnostic=self._diagnostic)
+            if config.outbox_dir is not None
+            else None
+        )
         if deliver is None:
             self._deliver = lambda event, _endpoint, token: deliver_event(
                 event,
@@ -398,6 +414,20 @@ class HeartbeatLoop:
             )
         else:
             self._deliver = deliver
+
+    def _flush_outbox(self, token: str) -> None:
+        if self._outbox is None:
+            return
+        try:
+            self._outbox.drain(
+                self._deliver,
+                self._event_endpoint,
+                token,
+                clock=self._clock,
+                sleeper=self._sleeper,
+            )
+        except Exception:
+            self._diagnostic("heartbeat_outbox_flush_failed")
 
     def _load_last_success(self) -> str | None:
         try:
@@ -436,6 +466,7 @@ class HeartbeatLoop:
             self._record_status(result, attempt_at)
             self._diagnostic(f"heartbeat_delivery_failed reason={error.reason}")
             return result
+        self._flush_outbox(token)
         try:
             if self._state is None:
                 self._state = HeartbeatState.load(

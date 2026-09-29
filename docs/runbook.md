@@ -570,6 +570,14 @@ events, 32 MiB total outbox JSON across `pending` and `dead-letter`, and at
 most 100 events or 5 seconds per drain. Operators must not widen these limits on a live Runner without a
 separately reviewed capacity decision.
 
+When `heartbeat-config.json` contains `outbox_dir`, the managed
+`RunnerObservabilityHeartbeat` service automatically performs one bounded
+outbox drain before each runner heartbeat. A transient failure therefore
+leaves the event in `pending` for the next heartbeat cycle; the service keeps
+the heartbeat fail-open and does not change the CI job result. The explicit
+`flush` command below remains available when an operator needs immediate
+replay without waiting for the next heartbeat.
+
 The explicit replay command is `flush`. It reads the token from
 `--token-file`, never from the command line value, and uses the same
 `--outbox-dir` as the emitting agent:

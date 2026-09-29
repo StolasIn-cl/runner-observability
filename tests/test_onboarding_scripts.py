@@ -685,6 +685,17 @@ class RunnerRoleScriptStaticContractTests(unittest.TestCase):
         self.assertNotIn("monitor.key", self.lowered.replace('"monitor.key"', ""))
         self.assertIn("monitor_key_not_allowed", self.script_text)
 
+    def test_runner_heartbeat_configuration_includes_telemetry_outbox(self) -> None:
+        configuration = self.script_text.split(
+            "function New-RunnerHeartbeatConfiguration", 1
+        )[1].split("function Invoke-RunnerConfigure", 1)[0]
+        repair = self.script_text.split("function Invoke-RunnerRepairPermissions", 1)[1].split(
+            "function Invoke-RunnerLifecycle", 1
+        )[0]
+
+        self.assertIn("outbox_dir = $outboxRoot", configuration)
+        self.assertIn('$configuration["outbox_dir"] = $outboxRoot', repair)
+
     def test_runner_preflight_checks_the_windows_service_runtime(self) -> None:
         self.assertIn("_load_service_api", self.script_text)
         self.assertIn("windows_service_runtime_unavailable", self.script_text)

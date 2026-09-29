@@ -17,6 +17,7 @@ from runner_observability.heartbeat import (
     HeartbeatState,
     HeartbeatStateError,
 )
+from runner_observability.outbox import DurableOutbox
 
 
 RUNNER_A = "20000000-0000-4000-8000-000000000001"
@@ -137,6 +138,99 @@ class HeartbeatTests(unittest.TestCase):
 
         self.assertTrue(result.delivered)
         self.assertEqual(endpoints, ["https://monitor.example.test:8765/v1/events"])
+
+    def test_heartbeat_flushes_pending_outbox_before_new_heartbeat(self) -> None:
+        outbox_root = self.base / "telemetry-outbox"
+        pending_event = {
+            "schema_version": 1,
+            "event_type": "job.finished",
+            "event_id": "10000000-0000-0000-0000-000000000001",
+            "runner_id": RUNNER_A,
+            "producer_id": "ci-test",
+            "producer_epoch": "2026-09-24T01",
+            "producer_sequence": 1,
+            "occurred_at": "2026-09-24T01:00:00Z",
+            "job": {
+                "job_id": 123,
+                "job_name": "heartbeat replay test",
+                "repository": "example/repository",
+                "run_attempt": 1,
+                "run_url": "https://github.com/example/repository/actions/runs/456",
+                "workflow_run_id": 456,
+            },
+            "outcome": "succeeded",
+        }
+        self.assertEqual(
+            DurableOutbox(outbox_root).enqueue(
+                pending_event,
+                queued_at="2026-09-24T01:00:00.000Z",
+            ).status,
+            "queued",
+        )
+        delivered_types: list[str] = []
+
+        def deliver(event: object, _endpoint: str, _token: str) -> DeliveryResult:
+            delivered_types.append(event["event_type"])  # type: ignore[index]
+            return DeliveryResult(True, 1, http_status=202)
+
+        loop = HeartbeatLoop(
+            self.config(outbox_dir=str(outbox_root)),
+            deliver=deliver,
+            diagnostic=lambda _message: None,
+        )
+
+        result = loop.emit_once()
+
+        self.assertTrue(result.delivered)
+        self.assertEqual(delivered_types, ["job.finished", "runner.heartbeat"])
+        self.assertEqual(list((outbox_root / "pending").glob("*.json")), [])
+
+    def test_heartbeat_replays_retained_outbox_on_the_next_cycle(self) -> None:
+        outbox_root = self.base / "telemetry-outbox"
+        pending_event = {
+            "schema_version": 1,
+            "event_type": "job.finished",
+            "event_id": "10000000-0000-0000-0000-000000000002",
+            "runner_id": RUNNER_A,
+            "producer_id": "ci-test",
+            "producer_epoch": "2026-09-24T01",
+            "producer_sequence": 1,
+            "occurred_at": "2026-09-24T01:00:00Z",
+            "job": {
+                "job_id": 123,
+                "job_name": "heartbeat replay test",
+                "repository": "example/repository",
+                "run_attempt": 1,
+                "run_url": "https://github.com/example/repository/actions/runs/456",
+                "workflow_run_id": 456,
+            },
+            "outcome": "succeeded",
+        }
+        DurableOutbox(outbox_root).enqueue(
+            pending_event,
+            queued_at="2026-09-24T01:00:00.000Z",
+        )
+        attempts = 0
+
+        def deliver(event: object, _endpoint: str, _token: str) -> DeliveryResult:
+            nonlocal attempts
+            attempts += 1
+            if event["event_type"] == "job.finished" and attempts == 1:  # type: ignore[index]
+                return DeliveryResult(False, 1, "temporary_network_failure")
+            return DeliveryResult(True, 1, http_status=202)
+
+        loop = HeartbeatLoop(
+            self.config(outbox_dir=str(outbox_root)),
+            deliver=deliver,
+            diagnostic=lambda _message: None,
+        )
+
+        loop.emit_once()
+        self.assertEqual(len(list((outbox_root / "pending").glob("*.json"))), 1)
+
+        loop.emit_once()
+
+        self.assertEqual(list((outbox_root / "pending").glob("*.json")), [])
 
     def test_scheduler_sends_immediately_then_every_sixty_seconds_without_delivery_drift(self) -> None:
         clock = FakeClock()

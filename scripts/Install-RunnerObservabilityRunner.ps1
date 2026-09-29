@@ -443,6 +443,7 @@ function New-RunnerHeartbeatConfiguration {
         interval_seconds = 60
         network_poll_seconds = 5
         allow_insecure_http = [bool]$AllowInsecureHttp
+        outbox_dir = $outboxRoot
     }
 }
 
@@ -538,6 +539,7 @@ function Invoke-RunnerRepairPermissions {
             $configuration[$property.Name] = $property.Value
         }
         $configuration["endpoint"] = $Endpoint
+        $configuration["outbox_dir"] = $outboxRoot
         Write-RunnerHeartbeatConfigAtomic -Path $configPath -Configuration $configuration
     }
     catch {
