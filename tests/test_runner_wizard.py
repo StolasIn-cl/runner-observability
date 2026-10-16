@@ -188,6 +188,18 @@ class RunnerWizardContractTests(unittest.TestCase):
         self.assertLess(resolver.index("Install-RunnerWizardServiceRuntime"), resolver.index("Test-RunnerWizardPythonCandidate", resolver.index("Install-RunnerWizardServiceRuntime")))
         self.assertLess(wizard.index("Resolve-RunnerWizardPython"), wizard.index('Read-Host "Type RESET-RUNNER'))
 
+    def test_pywin32_bootstrap_uses_process_exit_code_without_native_error_stream(self) -> None:
+        installer = self.text.split("function Install-RunnerWizardServiceRuntime", 1)[1].split(
+            "function Resolve-RunnerWizardPython", 1
+        )[0]
+
+        self.assertIn("[System.Diagnostics.ProcessStartInfo]::new()", installer)
+        self.assertIn("RedirectStandardOutput", installer)
+        self.assertIn("RedirectStandardError", installer)
+        self.assertIn("$process.ExitCode", installer)
+        self.assertNotIn("$installExitCode = -1", installer)
+        self.assertNotIn("$null = @(& $PythonPath", installer)
+
     def test_new_runner_docs_separate_python_prerequisite_from_pywin32_bootstrap(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         runbook = (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")

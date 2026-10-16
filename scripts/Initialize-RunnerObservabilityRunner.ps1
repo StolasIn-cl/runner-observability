@@ -241,19 +241,59 @@ function Install-RunnerWizardServiceRuntime {
     }
 
     Write-Output "python_service_runtime_install=started"
-    $installExitCode = -1
+    $installExitCode = $null
+    $installOutput = ""
+    $installExceptionType = $null
+    $process = [System.Diagnostics.Process]::new()
     try {
-        # Use the selected interpreter's configured pip index. Capture all pip
-        # output so credentials embedded in index configuration are not echoed.
-        $null = @(& $PythonPath -s -m pip install --quiet --disable-pip-version-check --no-input --upgrade "pywin32>=306" 2>&1)
-        $installExitCode = $LASTEXITCODE
+        # Run pip outside PowerShell's native stderr handling. With
+        # ErrorActionPreference=Stop, redirected native stderr can otherwise
+        # throw even after pip has successfully installed the package.
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $PythonPath
+        $startInfo.Arguments = '-s -m pip install --quiet --disable-pip-version-check --no-input --upgrade "pywin32>=306"'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            throw "Could not start the selected Python interpreter"
+        }
+
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $installExitCode = $process.ExitCode
+        $installOutput = @(
+            $stdoutTask.GetAwaiter().GetResult()
+            $stderrTask.GetAwaiter().GetResult()
+        ) -join [Environment]::NewLine
     }
     catch {
-        $installExitCode = -1
+        $installExceptionType = $_.Exception.GetType().Name
+    }
+    finally {
+        $process.Dispose()
+    }
+
+    if ($null -ne $installExceptionType) {
+        Write-Output "python_service_runtime_install_exit_code=-1"
+        Write-Output ("python_service_runtime_install_exception_type={0}" -f $installExceptionType)
+        throw (New-RunnerWizardError -Reason "windows_service_runtime_install_failed")
     }
 
     if ($installExitCode -ne 0) {
         Write-Output ("python_service_runtime_install_exit_code={0}" -f $installExitCode)
+        $safeDetails = @(
+            $installOutput -split '\r?\n' |
+                Where-Object { $_ -match "(?i)^\s*(ERROR:|WARNING:)" } |
+                Select-Object -First 3
+        )
+        foreach ($detail in $safeDetails) {
+            $redactedDetail = [regex]::Replace([string]$detail, "(?i)https?://\S+", "<redacted-url>")
+            Write-Output ("python_service_runtime_install_detail={0}" -f $redactedDetail)
+        }
         throw (New-RunnerWizardError -Reason "windows_service_runtime_install_failed")
     }
     Write-Output "python_service_runtime_install=completed"
