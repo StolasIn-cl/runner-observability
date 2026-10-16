@@ -220,10 +220,49 @@ function Test-RunnerWizardPythonCandidate {
     return [pscustomobject]$result
 }
 
+function Test-RunnerWizardPipAvailable {
+    param([Parameter(Mandatory = $true)][string]$PythonPath)
+
+    try {
+        $null = @(& $PythonPath -s -m pip --version 2>&1)
+        return ($LASTEXITCODE -eq 0)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Install-RunnerWizardServiceRuntime {
+    param([Parameter(Mandatory = $true)][string]$PythonPath)
+
+    if (-not (Test-RunnerWizardPipAvailable -PythonPath $PythonPath)) {
+        Write-Output "python_pip_install_hint=Install Python with pip from the approved software channel, then rerun this wizard"
+        throw (New-RunnerWizardError -Reason "python_pip_unavailable")
+    }
+
+    Write-Output "python_service_runtime_install=started"
+    $installExitCode = -1
+    try {
+        # Use the selected interpreter's configured pip index. Capture all pip
+        # output so credentials embedded in index configuration are not echoed.
+        $null = @(& $PythonPath -s -m pip install --quiet --disable-pip-version-check --no-input --upgrade "pywin32>=306" 2>&1)
+        $installExitCode = $LASTEXITCODE
+    }
+    catch {
+        $installExitCode = -1
+    }
+
+    if ($installExitCode -ne 0) {
+        Write-Output ("python_service_runtime_install_exit_code={0}" -f $installExitCode)
+        throw (New-RunnerWizardError -Reason "windows_service_runtime_install_failed")
+    }
+    Write-Output "python_service_runtime_install=completed"
+}
+
 function Resolve-RunnerWizardPython {
     $candidatePaths = @(Get-RunnerWizardPythonCandidates)
     if ($candidatePaths.Count -eq 0) {
-        Write-Output "python_install_hint=Install Python 3.11 or newer from the approved software channel, then rerun this wizard"
+        Write-Output "python_install_hint=Install Python 3.11 or newer with pip from the approved software channel, then rerun this wizard"
         throw (New-RunnerWizardError -Reason "python_not_found")
     }
 
@@ -241,6 +280,7 @@ function Resolve-RunnerWizardPython {
             $script:PythonPath = $candidate.Path
             Write-Output ("python_path={0}" -f $candidate.Path)
             Write-Output ("python_version={0}" -f $candidate.Version)
+            Write-Output "python_service_runtime=available"
             return
         }
         switch ($candidate.Status) {
@@ -264,14 +304,35 @@ function Resolve-RunnerWizardPython {
     if ($serviceRuntimeMissing -and $supportedVersionFound) {
         $runtimePath = $serviceRuntimeCandidatePaths[0]
         Write-Output ("python_service_runtime_path={0}" -f $runtimePath)
-        Write-Output ("python_service_runtime_hint=Run `"{0}`" -m pip install --upgrade --no-user 'pywin32>=306', then rerun this wizard" -f $runtimePath)
-        throw (New-RunnerWizardError -Reason "windows_service_runtime_unavailable")
+        if (-not (Test-RunnerWizardPipAvailable -PythonPath $runtimePath)) {
+            Write-Output "python_pip_install_hint=Install Python with pip from the approved software channel, then rerun this wizard"
+            throw (New-RunnerWizardError -Reason "python_pip_unavailable")
+        }
+        if ($WhatIf) {
+            Write-Output "python_service_runtime=missing"
+            Write-Output "python_service_runtime_hint=The wizard will install pywin32>=306 using the configured pip package source"
+            Write-Output "python_service_runtime_action=install_pywin32"
+            $script:PythonPath = $runtimePath
+            return
+        }
+
+        Install-RunnerWizardServiceRuntime -PythonPath $runtimePath
+        $installedCandidate = Test-RunnerWizardPythonCandidate -CandidatePath $runtimePath
+        if (-not $installedCandidate.VersionSupported -or -not $installedCandidate.ServiceRuntimeAvailable) {
+            Write-Output "python_service_runtime_install_verified=false"
+            throw (New-RunnerWizardError -Reason "windows_service_runtime_install_failed")
+        }
+        $script:PythonPath = $runtimePath
+        Write-Output ("python_path={0}" -f $runtimePath)
+        Write-Output ("python_version={0}" -f $installedCandidate.Version)
+        Write-Output "python_service_runtime=available"
+        return
     }
     if (($accessDeniedCount -eq $candidatePaths.Count) -and ($accessDeniedCount -gt 0)) {
         throw (New-RunnerWizardError -Reason "python_execute_access_denied")
     }
     if (-not $supportedVersionFound) {
-        Write-Output "python_install_hint=Install Python 3.11 or newer from the approved software channel, then rerun this wizard"
+        Write-Output "python_install_hint=Install Python 3.11 or newer with pip from the approved software channel, then rerun this wizard"
         throw (New-RunnerWizardError -Reason "python_version_unsupported")
     }
     if ($executeFailureCount -gt 0) {
@@ -553,15 +614,6 @@ function Invoke-RunnerWizard {
     if ([string]::IsNullOrWhiteSpace($Endpoint)) {
         $script:Endpoint = "https://${MonitorHost}:8765/v1/events"
     }
-    Resolve-RunnerWizardPython
-
-    if ($WhatIf) {
-        Write-Output "whatif=true"
-        Write-Output "status=OK"
-        Write-Output "plan=inventory,monitor_port_check,reset,secret_gate,stage_current_head,configure,start"
-        return
-    }
-
     $portReachable = $false
     try {
         $portReachable = [bool](Test-NetConnection -ComputerName $MonitorIp -Port 8765 -InformationLevel Quiet -WarningAction SilentlyContinue)
@@ -573,6 +625,14 @@ function Invoke-RunnerWizard {
         throw (New-RunnerWizardError -Reason "monitor_port_unreachable")
     }
     Write-Output "monitor_port=reachable"
+    Resolve-RunnerWizardPython
+
+    if ($WhatIf) {
+        Write-Output "whatif=true"
+        Write-Output "status=OK"
+        Write-Output "plan=inventory,monitor_port_check,python_check,install_pywin32_if_missing,reset,secret_gate,stage_current_head,configure,start"
+        return
+    }
 
     $oldCertificateThumbprint = $null
     $oldCertificateStoreEntries = @()

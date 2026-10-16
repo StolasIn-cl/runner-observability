@@ -156,6 +156,47 @@ class RunnerWizardContractTests(unittest.TestCase):
         self.assertIn("candidate.VersionSupported", resolver)
         self.assertIn("python_candidate_access_denied", resolver)
 
+    def test_whatif_plans_pywin32_bootstrap_without_running_pip(self) -> None:
+        resolver = self.text.split("function Resolve-RunnerWizardPython", 1)[1].split(
+            "function Get-RunnerWizardCertificateSha256", 1
+        )[0]
+        what_if = resolver.split("if ($WhatIf)", 1)[1].split(
+            "Install-RunnerWizardServiceRuntime", 1
+        )[0]
+        wizard = self.text.split("function Invoke-RunnerWizard {", 1)[1]
+
+        self.assertIn("python_service_runtime_action=install_pywin32", what_if)
+        self.assertLess(resolver.index("if ($WhatIf)"), resolver.index("Install-RunnerWizardServiceRuntime"))
+        self.assertIn("install_pywin32_if_missing", wizard)
+        self.assertLess(wizard.index("Test-NetConnection"), wizard.index("Resolve-RunnerWizardPython"))
+
+    def test_live_wizard_installs_and_rechecks_pywin32_before_reset(self) -> None:
+        installer = self.text.split("function Install-RunnerWizardServiceRuntime", 1)[1].split(
+            "function Resolve-RunnerWizardPython", 1
+        )[0]
+        resolver = self.text.split("function Resolve-RunnerWizardPython", 1)[1].split(
+            "function Get-RunnerWizardCertificateSha256", 1
+        )[0]
+        wizard = self.text.split("function Invoke-RunnerWizard {", 1)[1]
+
+        self.assertIn("-m pip install", installer)
+        self.assertIn("pywin32>=306", installer)
+        self.assertIn("$PythonPath", installer)
+        self.assertNotIn("--no-user", installer)
+        self.assertIn("windows_service_runtime_install_failed", installer)
+        self.assertIn("Test-RunnerWizardPythonCandidate", resolver)
+        self.assertLess(resolver.index("Install-RunnerWizardServiceRuntime"), resolver.index("Test-RunnerWizardPythonCandidate", resolver.index("Install-RunnerWizardServiceRuntime")))
+        self.assertLess(wizard.index("Resolve-RunnerWizardPython"), wizard.index('Read-Host "Type RESET-RUNNER'))
+
+    def test_new_runner_docs_separate_python_prerequisite_from_pywin32_bootstrap(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        runbook = (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
+
+        self.assertIn("公司核准來源安裝 Python 3.11+", readme)
+        self.assertIn("自動安裝 `pywin32>=306`", readme)
+        self.assertIn("Install Python 3.11 or newer with `pip` from the organization's approved", runbook)
+        self.assertIn("installs `pywin32>=306`", runbook)
+
     def test_clean_rebuild_initializes_optional_certificate_import_state(self) -> None:
         self.assertRegex(self.text, r"(?im)^\s*\$script:ImportCertificate\s*=\s*\$false\s*$")
 
