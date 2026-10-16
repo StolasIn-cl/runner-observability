@@ -101,7 +101,17 @@ The following uses an existing, operator-supplied certificate pair. `PublicCa`,
 they never silently replace those files.
 
 ```powershell
-$python = 'C:\Python311\python.exe'
+$monitorScript = '.\scripts\Install-RunnerObservabilityMonitor.ps1'
+$pythonDetection = & $monitorScript -Action DetectPython
+if ($LASTEXITCODE -ne 0) {
+    throw 'No service-accessible machine-wide Python 3.11+ was found. Ask your administrator to provision one in a shared location and register it for the machine, then rerun this step.'
+}
+$python = ($pythonDetection | ConvertFrom-Json).PythonPath
+Write-Host "Using machine-wide Python: $python"
+& $python -m pip install --quiet --disable-pip-version-check --no-input '.[windows-service]'
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not install the Monitor package and pywin32 from the configured pip source'
+}
 $config = 'C:\runner-observability\service-config.json'
 $database = 'C:\runner-observability-data\monitor.sqlite'
 $secretRoot = 'C:\runner-observability-secrets'

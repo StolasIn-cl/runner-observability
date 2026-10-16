@@ -14,6 +14,7 @@ import unittest
 ROOT = Path(__file__).parents[1]
 BOOTSTRAP_MODULE = ROOT / "scripts" / "RunnerObservability.Bootstrap.psm1"
 MONITOR_SCRIPT = ROOT / "scripts" / "Install-RunnerObservabilityMonitor.ps1"
+MONITOR_PYTHON_MODULE = ROOT / "scripts" / "RunnerObservability.Python.psm1"
 RUNNER_SCRIPT = ROOT / "scripts" / "Install-RunnerObservabilityRunner.ps1"
 POWERSHELL = "powershell.exe"
 
@@ -413,6 +414,7 @@ class MonitorRoleScriptStaticContractTests(unittest.TestCase):
             with self.subTest(parameter=parameter):
                 self.assertRegex(self.script_text, rf"\$({parameter})\b")
         for action in (
+            "DetectPython",
             "Preflight",
             "Install",
             "RepairPermissions",
@@ -486,8 +488,88 @@ class MonitorRoleScriptStaticContractTests(unittest.TestCase):
 
         self.assertIn("windows-service", monitor_rebuild)
         self.assertIn("$pythonPath", monitor_rebuild)
-        self.assertIn("outside WindowsApps and per-user AppData", monitor_rebuild)
+        self.assertIn("-Action DetectPython", monitor_rebuild)
+        self.assertNotIn("Read-Host 'Full path to machine-wide Python", monitor_rebuild)
         self.assertLess(install_dependencies, preflight)
+
+    def test_monitor_clean_rebuild_uses_automatic_machine_python_detection(self) -> None:
+        monitor_rebuild = self.readme_text.split("## 1. 從 0 重建 Monitor", 1)[1].split(
+            "## 2. 從 0 重建 Runner", 1
+        )[0]
+
+        self.assertIn("-Action DetectPython", monitor_rebuild)
+        self.assertIn("ConvertFrom-Json", monitor_rebuild)
+        self.assertNotIn("Read-Host 'Full path to machine-wide Python", monitor_rebuild)
+        self.assertLess(monitor_rebuild.index("-Action DetectPython"), monitor_rebuild.index("pip install"))
+
+    def test_monitor_runbook_uses_automatic_python_detection(self) -> None:
+        monitor_setup = self.runbook_text.split("The following uses an existing", 1)[1].split(
+            "For development/test only", 1
+        )[0]
+
+        self.assertIn("-Action DetectPython", monitor_setup)
+        self.assertNotIn("$python = 'C:\\Python311\\python.exe'", monitor_setup)
+        self.assertLess(monitor_setup.index("-Action DetectPython"), monitor_setup.index("pip install"))
+
+    @unittest.skipUnless(
+        Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe").is_file(),
+        "Windows PowerShell required",
+    )
+    def test_monitor_detect_python_returns_a_path_or_actionable_reason(self) -> None:
+        script = f"& {powershell_literal(MONITOR_SCRIPT)} -Action DetectPython"
+        completed = run_powershell(script)
+
+        if completed.returncode == 0:
+            result = json.loads(completed.stdout.strip().splitlines()[-1])
+            path = result["PythonPath"]
+            self.assertTrue(path.lower().endswith("python.exe"), path)
+            self.assertNotRegex(path, r"(?i)\\WindowsApps\\|\\Users\\[^\\]+\\")
+        else:
+            self.assertIn("reason=python_not_found", completed.stdout)
+
+    @unittest.skipUnless(
+        Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe").is_file(),
+        "Windows PowerShell required",
+    )
+    def test_monitor_python_selection_uses_newest_eligible_machine_install(self) -> None:
+        script = f"""
+Import-Module {powershell_literal(MONITOR_PYTHON_MODULE)} -Force
+$candidates = @(
+    [pscustomobject]@{{ Path = 'C:\\Users\\example\\AppData\\Local\\Programs\\Python\\Python315\\python.exe'; Version = '3.15'; RegistryView = 'Registry64' }},
+    [pscustomobject]@{{ Path = 'C:\\Users\\example\\SharedPython\\python.exe'; Version = '3.14'; RegistryView = 'Registry64' }},
+    [pscustomobject]@{{ Path = 'C:\\Program Files\\Python312\\python.exe'; Version = '3.12'; RegistryView = 'Registry64' }},
+    [pscustomobject]@{{ Path = 'C:\\Python310\\python.exe'; Version = '3.10'; RegistryView = 'Registry64' }},
+    [pscustomobject]@{{ Path = 'C:\\Python313\\python.exe'; Version = '3.13'; RegistryView = 'Registry64' }},
+    [pscustomobject]@{{ Path = 'C:\\Program Files\\WindowsApps\\python.exe'; Version = '3.15'; RegistryView = 'Registry64' }}
+)
+$selected = Select-MonitorPythonCandidate -Candidates $candidates
+if ($selected -ne 'C:\\Python313\\python.exe') {{
+    throw "Expected newest eligible machine Python, got '$selected'"
+}}
+"""
+        completed = run_powershell(script)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    @unittest.skipUnless(
+        Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe").is_file(),
+        "Windows PowerShell required",
+    )
+    def test_monitor_python_selection_reports_when_no_eligible_install_exists(self) -> None:
+        script = f"""
+Import-Module {powershell_literal(MONITOR_PYTHON_MODULE)} -Force
+$candidates = @(
+    [pscustomobject]@{{ Path = 'C:\\Users\\example\\AppData\\Local\\Programs\\Python\\Python315\\python.exe'; Version = '3.15'; RegistryView = 'Registry64' }},
+    [pscustomobject]@{{ Path = 'C:\\Python310\\python.exe'; Version = '3.10'; RegistryView = 'Registry64' }}
+)
+$reason = ''
+try {{ Select-MonitorPythonCandidate -Candidates $candidates | Out-Null }}
+catch {{ $reason = $_.Exception.Message }}
+if ($reason -ne 'python_not_found') {{
+    throw "Expected python_not_found, got '$reason'"
+}}
+"""
+        completed = run_powershell(script)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     @unittest.skipUnless(
         Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe").is_file(),

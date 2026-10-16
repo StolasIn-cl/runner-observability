@@ -16,7 +16,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet("Preflight", "Install", "RepairPermissions", "Start", "Stop", "Restart", "Status", "Uninstall")]
+    [ValidateSet("DetectPython", "Preflight", "Install", "RepairPermissions", "Start", "Stop", "Restart", "Status", "Uninstall")]
     [string]$Action = "Preflight",
     [string]$PythonPath = "",
     [string]$ConfigPath = "C:\runner-observability\service-config.json",
@@ -39,8 +39,10 @@ $ErrorActionPreference = "Stop"
 
 $bootstrapPath = Join-Path $PSScriptRoot "RunnerObservability.Bootstrap.psm1"
 $serviceModulePath = Join-Path $PSScriptRoot "RunnerObservability.Service.psm1"
+$pythonModulePath = Join-Path $PSScriptRoot "RunnerObservability.Python.psm1"
 Import-Module $bootstrapPath -Force
 Import-Module $serviceModulePath -Force
+Import-Module $pythonModulePath -Force
 
 if ([string]::IsNullOrWhiteSpace($TokenPath)) {
     $TokenPath = Join-Path $SecretRoot "monitor-token.txt"
@@ -459,12 +461,13 @@ function Assert-MonitorRunnerAddresses {
 }
 
 function Assert-MonitorPython {
-    if ([string]::IsNullOrWhiteSpace($PythonPath)) {
-        $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-        if ($null -eq $pythonCommand) {
-            throw (New-MonitorStableError -Reason "python_not_found")
-        }
-        $script:PythonPath = $pythonCommand.Source
+    try {
+        $script:PythonPath = Resolve-MonitorPython `
+            -PreferredPath $PythonPath `
+            -ServiceAccount $ServiceAccount
+    }
+    catch {
+        throw (New-MonitorStableError -Reason $_.Exception.Message)
     }
     if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
         throw (New-MonitorStableError -Reason "python_not_found")
@@ -477,6 +480,15 @@ function Assert-MonitorPython {
             )) -and
         ($PythonPath -match '(?i)\\WindowsApps\\|\\Users\\[^\\]+\\AppData\\')) {
         throw (New-MonitorStableError -Reason "python_runtime_not_service_accessible")
+    }
+}
+
+function Invoke-MonitorDetectPython {
+    $null = Invoke-MonitorInventory
+    $pythonPath = Resolve-MonitorPython -ServiceAccount $ServiceAccount
+    [pscustomobject]@{
+        PythonPath = $pythonPath
+        Reason = "python_detected"
     }
 }
 
@@ -633,6 +645,10 @@ function Invoke-MonitorLifecycle {
 
 try {
     switch ($Action) {
+        "DetectPython" {
+            $result = Invoke-MonitorDetectPython
+            $result | ConvertTo-Json -Compress
+        }
         "Preflight" {
             $result = Invoke-MonitorPreflight
             $result | ConvertTo-Json -Compress
@@ -662,6 +678,7 @@ catch {
         "runner_address_required",
         "runner_address_invalid",
         "python_not_found",
+        "python_version_unsupported",
         "python_import_failed",
         "python_runtime_not_service_accessible",
         "service_already_exists",

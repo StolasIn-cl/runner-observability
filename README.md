@@ -82,14 +82,12 @@ if ($runnerIps.Count -eq 0) {
     throw 'Enter at least one confirmed Runner IPv4 before continuing'
 }
 
-$pythonPath = Read-Host 'Full path to machine-wide Python 3.11+ (not WindowsApps or per-user AppData)'
-if ([string]::IsNullOrWhiteSpace($pythonPath)) {
-    throw 'A machine-wide Python path is required for the LocalService Monitor service'
+$pythonDetection = & $monitorScript -Action DetectPython
+if ($LASTEXITCODE -ne 0) {
+    throw 'No service-accessible machine-wide Python 3.11+ was found. Ask your administrator to provision one in a shared location and register it for the machine, then rerun this step.'
 }
-if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf) -or
-    $pythonPath -match '(?i)\\WindowsApps\\|\\Users\\[^\\]+\\AppData\\') {
-    throw 'Choose an existing machine-wide Python executable outside WindowsApps and per-user AppData'
-}
+$pythonPath = ($pythonDetection | ConvertFrom-Json).PythonPath
+Write-Host "Using machine-wide Python: $pythonPath"
 & $pythonPath -m pip install --quiet --disable-pip-version-check --no-input '.[windows-service]'
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not install the Monitor package and pywin32 from the configured pip source'
@@ -151,9 +149,12 @@ Invoke-MonitorAction -Action Install -Arguments $installArguments
 Invoke-MonitorAction -Action Start -Arguments $commonArguments
 ```
 
-Monitor Host 必須先從公司核准來源安裝 machine-wide Python 3.11+。上述流程再用該
-Python 從 repo 根目錄安裝 `.[windows-service]`，包含 Monitor 套件與 pywin32；請先
-將 pip 設定到公司核准的套件來源。服務以 `LocalService` 執行，因此不能使用
+Monitor Host 必須先從公司核准來源部署 service-accessible 的 machine-wide Python 3.11+。
+腳本會從 HKLM 的 Python 安裝登錄與 Windows 系統 PATH 自動選用最新合格版本，略過
+WindowsApps 與任何使用者目錄。新版 Python Install Manager 的 runtime 是 per-user，不能
+因為管理器本身已安裝就視為服務可用。上述流程再用偵測到的 Python 從 repo 根目錄安裝
+`.[windows-service]`，包含 Monitor 套件與 pywin32。找不到時請管理員把 Python 部署到共用
+位置並登錄到系統，再重新執行；也請先將 pip 設定到公司核准的套件來源。服務以 `LocalService` 執行，因此不能使用
 `WindowsApps` alias 或使用者 `AppData` 下的 Python。Preflight 會在隔離匯入模式檢查
 已安裝的套件與 Windows service modules；若回報 `python_runtime_not_service_accessible`
 或 `python_import_failed`，流程會在解除服務或刪檔前停止。`SelfSigned` 僅限核准的測試環境；正式環境
