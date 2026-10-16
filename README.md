@@ -46,7 +46,7 @@ Get-Service -Name 'RunnerObservabilityMonitor','RunnerObservabilityHeartbeat' `
 
 以下流程只用於要丟棄 Monitor 的舊 service、token、certificate、private key、
 config 與 telemetry database 的乾淨環境。先在 Monitor Host 的系統管理員
-PowerShell 確認實際 Monitor IPv4 與 Runner IPv4：
+PowerShell 確認 Monitor IPv4；再到每台 Runner 上確認該 Runner 的 IPv4：
 
 ```powershell
 Get-NetIPConfiguration |
@@ -61,7 +61,8 @@ Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue
     Select-Object LocalAddress, LocalPort, OwningProcess
 ```
 
-確認路由可達的 Monitor IPv4 與每台 Runner 的 IPv4 後，執行下面的完整重建。
+確認 Monitor 與每台 Runner 的實際 IPv4 後，才執行下面的完整重建。流程會先
+收集 Runner IPv4 並執行唯讀 Preflight；Preflight 未成功時不會解除服務或刪檔。
 這段只刪除列出的 Monitor-owned 檔案，不會刪除 GitHub Runner registration：
 
 ```powershell
@@ -69,7 +70,43 @@ $monitorScript = '.\scripts\Install-RunnerObservabilityMonitor.ps1'
 $config = 'C:\runner-observability\service-config.json'
 $database = 'C:\runner-observability-data\monitor.sqlite'
 $secretRoot = 'C:\runner-observability-secrets'
-$runnerIp = '<CONFIRMED_RUNNER_IPV4>'
+$runnerIps = @()
+do {
+    $address = Read-Host 'Confirmed Runner IPv4 (blank when finished)'
+    $address = $address.Trim()
+    if (-not [string]::IsNullOrWhiteSpace($address)) {
+        $runnerIps += $address
+    }
+} while (-not [string]::IsNullOrWhiteSpace($address))
+if ($runnerIps.Count -eq 0) {
+    throw 'Enter at least one confirmed Runner IPv4 before continuing'
+}
+
+$commonArguments = @{
+    ConfigPath = $config
+    DatabasePath = $database
+    SecretRoot = $secretRoot
+}
+$installArguments = $commonArguments + @{
+    CertificateMode = 'SelfSigned'
+    AllowDevSelfSigned = $true
+    TrustSelfSignedCertificate = $true
+    RunnerAddress = $runnerIps
+}
+function Invoke-MonitorAction {
+    param(
+        [Parameter(Mandatory = $true)][string]$Action,
+        [Parameter(Mandatory = $true)][hashtable]$Arguments
+    )
+    $global:LASTEXITCODE = 0
+    & $monitorScript -Action $Action @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Monitor action '$Action' failed with exit code $LASTEXITCODE; stop here"
+    }
+}
+
+Invoke-MonitorAction -Action Preflight -Arguments $installArguments
+
 $ownedFiles = @(
     (Join-Path $secretRoot 'monitor-token.txt'),
     (Join-Path $secretRoot 'monitor.crt'),
@@ -80,8 +117,8 @@ $ownedFiles = @(
     ($database + '-shm')
 )
 
-& $monitorScript -Action Status -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
-& $monitorScript -Action Uninstall -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+Invoke-MonitorAction -Action Status -Arguments $commonArguments
+Invoke-MonitorAction -Action Uninstall -Arguments $commonArguments
 
 $confirmation = Read-Host 'Type RESET-MONITOR to delete the listed Monitor files'
 if ($confirmation -cne 'RESET-MONITOR') {
@@ -96,16 +133,8 @@ if (@($ownedFiles | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }).C
     throw 'Monitor clean rebuild did not remove every listed file'
 }
 
-& $monitorScript -Action Install `
-    -ConfigPath $config `
-    -DatabasePath $database `
-    -SecretRoot $secretRoot `
-    -CertificateMode SelfSigned `
-    -AllowDevSelfSigned `
-    -TrustSelfSignedCertificate `
-    -RunnerAddress $runnerIp
-
-& $monitorScript -Action Start -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
+Invoke-MonitorAction -Action Install -Arguments $installArguments
+Invoke-MonitorAction -Action Start -Arguments $commonArguments
 ```
 
 Monitor Host 必須先從公司核准來源安裝 Python 3.11+ 與 pywin32；Monitor 安裝腳本
