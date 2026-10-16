@@ -40,7 +40,10 @@ any script or test in this repository.
 
 - Python 3.11 or newer on the target host (`python --version`). The monitor
   core uses the standard library; the Windows Service host additionally
-  requires the optional `windows-service` extra (`pywin32`).
+  requires the optional `windows-service` extra (`pywin32`). Install Python
+  machine-wide from the organization's approved source: the Monitor service
+  runs as `NT AUTHORITY\LocalService` and cannot rely on a `WindowsApps`
+  alias or a per-user `AppData` runtime.
 - PowerShell 5.1 or newer (Windows built-in `powershell.exe` is fine).
 - A built copy of this repository (or a specific pinned revision's
   contents) available as a local source directory to install from. This
@@ -106,6 +109,13 @@ $token = Join-Path $secretRoot 'monitor-token.txt'
 $cert = Join-Path $secretRoot 'monitor.crt'
 $key = Join-Path $secretRoot 'monitor.key'
 $runnerIp = '192.0.2.10' # replace with the confirmed Runner IPv4 address
+
+# Run from the repository root with the machine-wide Python selected above.
+# pip uses the host's configured, organization-approved package source.
+& $python -m pip install --quiet --disable-pip-version-check --no-input '.[windows-service]'
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not install the Monitor package and pywin32 from the configured pip source'
+}
 
 .\scripts\Install-RunnerObservabilityMonitor.ps1 `
     -Action Preflight -PythonPath $python -ConfigPath $config `

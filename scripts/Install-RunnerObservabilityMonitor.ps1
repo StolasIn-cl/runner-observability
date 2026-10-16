@@ -469,13 +469,20 @@ function Assert-MonitorPython {
     if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
         throw (New-MonitorStableError -Reason "python_not_found")
     }
+    if (($ServiceAccount -in @(
+                "NT AUTHORITY\LocalService",
+                "NT AUTHORITY\NetworkService",
+                "NT AUTHORITY\SYSTEM",
+                "LocalSystem"
+            )) -and
+        ($PythonPath -match '(?i)\\WindowsApps\\|\\Users\\[^\\]+\\AppData\\')) {
+        throw (New-MonitorStableError -Reason "python_runtime_not_service_accessible")
+    }
 }
 
 function Assert-MonitorPythonImport {
-    $previousPythonPath = $env:PYTHONPATH
     try {
-        $env:PYTHONPATH = Join-Path (Split-Path -Parent $PSScriptRoot) "src"
-        & $PythonPath -s -c "import runner_observability, runner_observability.service" 2>$null | Out-Null
+        & $PythonPath -I -s -c "import runner_observability.service as service; assert service._load_service_api() is not None" 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw (New-MonitorStableError -Reason "python_import_failed")
         }
@@ -485,14 +492,6 @@ function Assert-MonitorPythonImport {
             throw
         }
         throw (New-MonitorStableError -Reason "python_import_failed")
-    }
-    finally {
-        if ($null -eq $previousPythonPath) {
-            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:PYTHONPATH = $previousPythonPath
-        }
     }
 }
 
@@ -664,6 +663,7 @@ catch {
         "runner_address_invalid",
         "python_not_found",
         "python_import_failed",
+        "python_runtime_not_service_accessible",
         "service_already_exists",
         "service_state_timeout",
         "service_state_read_failed",

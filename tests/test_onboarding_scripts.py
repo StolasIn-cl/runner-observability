@@ -450,6 +450,45 @@ class MonitorRoleScriptStaticContractTests(unittest.TestCase):
         self.assertLess(preflight, reset_prompt)
         self.assertLess(preflight, monitor_rebuild.index("Invoke-MonitorAction -Action Uninstall"))
 
+    def test_monitor_preflight_checks_service_visible_python_and_pywin32(self) -> None:
+        python_check = self.script_text.split("function Assert-MonitorPythonImport", 1)[1].split(
+            "function Invoke-MonitorPreflight", 1
+        )[0]
+
+        self.assertIn("-I -s -c", python_check)
+        self.assertIn("_load_service_api() is not None", python_check)
+        self.assertNotIn("PYTHONPATH", python_check)
+
+    def test_monitor_preflight_rejects_windowsapps_python_for_local_service(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = f"""
+& {powershell_literal(MONITOR_SCRIPT)} `
+    -Action Preflight `
+    -PythonPath (Join-Path $env:LOCALAPPDATA 'Microsoft\\WindowsApps\\python.exe') `
+    -ConfigPath {powershell_literal(root / 'config' / 'service-config.json')} `
+    -DatabasePath {powershell_literal(root / 'data' / 'monitor.sqlite')} `
+    -SecretRoot {powershell_literal(root / 'secrets')} `
+    -CertificateMode SelfSigned `
+    -AllowDevSelfSigned `
+    -RunnerAddress '192.0.2.1'
+"""
+            completed = run_powershell(script)
+
+            self.assertIn("reason=python_runtime_not_service_accessible", completed.stdout)
+
+    def test_monitor_clean_rebuild_installs_service_package_before_preflight(self) -> None:
+        monitor_rebuild = self.readme_text.split("## 1. 從 0 重建 Monitor", 1)[1].split(
+            "## 2. 從 0 重建 Runner", 1
+        )[0]
+        install_dependencies = monitor_rebuild.index("pip install")
+        preflight = monitor_rebuild.index("Invoke-MonitorAction -Action Preflight")
+
+        self.assertIn("windows-service", monitor_rebuild)
+        self.assertIn("$pythonPath", monitor_rebuild)
+        self.assertIn("outside WindowsApps and per-user AppData", monitor_rebuild)
+        self.assertLess(install_dependencies, preflight)
+
     @unittest.skipUnless(
         Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe").is_file(),
         "Windows PowerShell required",
@@ -536,6 +575,7 @@ class MonitorRoleScriptStaticContractTests(unittest.TestCase):
 & {powershell_literal(MONITOR_SCRIPT)} `
     -Action Preflight `
     -PythonPath (Get-Command python).Source `
+    -ServiceAccount 'CurrentUser' `
     -ConfigPath {powershell_literal(root / 'config' / 'service-config.json')} `
     -DatabasePath {powershell_literal(root / 'data' / 'monitor.sqlite')} `
     -SecretRoot {powershell_literal(root / 'secrets')} `
