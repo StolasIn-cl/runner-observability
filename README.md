@@ -53,7 +53,7 @@ Get-NetIPConfiguration |
     Where-Object { $_.NetAdapter.Status -eq 'Up' } |
     Select-Object InterfaceAlias,
         @{Name='IPv4'; Expression={
-            (@($_.IPv4Address | ForEach-Object { $_.IPAddress }) -join ', '
+            (@($_.IPv4Address | ForEach-Object { $_.IPAddress }) -join ', ')
         }},
         IPv4DefaultGateway
 
