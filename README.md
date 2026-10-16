@@ -108,9 +108,9 @@ if (@($ownedFiles | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }).C
 & $monitorScript -Action Start -ConfigPath $config -DatabasePath $database -SecretRoot $secretRoot
 ```
 
-這會由腳本自動尋找可用的 Python。若回報 `python_not_found` 或
-`python_import_failed`，先從公司核准來源安裝 Python 3.11+/pywin32，再重跑；
-不要把固定 Python path 寫進 README。`SelfSigned` 僅限核准的測試環境；正式環境
+Monitor Host 必須先從公司核准來源安裝 Python 3.11+ 與 pywin32；Monitor 安裝腳本
+不會自行安裝這些依賴。若回報 `python_not_found` 或 `python_import_failed`，請先
+補齊 Monitor Host 的依賴再重跑；不要把固定 Python path 寫進 README。`SelfSigned` 僅限核准的測試環境；正式環境
 應改用既有受信任的 certificate pair。Monitor 產生的 `monitor-token.txt`、
 `monitor.crt` 與 `monitor.key` 留在 Monitor Host，只有前兩者稍後會傳到 Runner。
 
@@ -140,8 +140,12 @@ git pull --ff-only origin codex/runner-observability
 該帳號讀取 token 的權限；若 listener 尚未啟動、同時有多個不同帳號，請明確傳入
 `-RunnerAccount 'DOMAIN\runner-user'`。不要改用 `Everyone` 或整個 Users 群組。
 
-腳本會自動尋找可用的 Python 3.11+ 與 Windows service runtime。若找不到，請
-先從公司核准來源安裝 Python/pywin32；不需要把固定的 Python path 寫進標準命令。
+新 Runner 必須先從公司核准來源安裝 Python 3.11+，並確認包含 pip；wizard 不會安裝
+Python。執行前可用 `py -0p` 確認實際直譯器路徑與版本。正式安裝時，wizard 會先
+檢查選定的 Python 是否可用；若缺少 Windows service runtime，會透過該 Python 與
+主機現有的 pip 套件來源自動安裝 `pywin32>=306`，再驗證服務模組。請先將 pip 設定
+到公司核准的套件來源。`-WhatIf` 只顯示將補裝 pywin32 的計畫，不會安裝套件。
+若 Python 或 pip 不存在，流程會在 `RESET-RUNNER` 前停止並提示從核准來源補裝。
 
 流程中的重要停點：
 

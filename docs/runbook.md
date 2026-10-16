@@ -181,6 +181,15 @@ firewall, or CI acceptance.
 
 ## Runner Host onboarding (after Monitor validation)
 
+Install Python 3.11 or newer with `pip` from the organization's approved
+software channel before running the Runner wizard. The wizard does not install
+Python. If the selected interpreter lacks the Windows service modules, a live
+wizard run installs `pywin32>=306` through that interpreter's existing pip
+configuration, then verifies the imports before requesting `RESET-RUNNER`.
+Configure pip to use an approved package source first; the wizard does not
+override or print the configured index. `-WhatIf` stays read-only and reports
+the planned pywin32 installation without running pip install.
+
 If this is the explicit full-clean Runner rebuild, complete the full-clean
 reset in the `README.md` procedure before running the transfer below. The
 reset removes the old Runner token/certificate pair; copy the newly generated
@@ -198,8 +207,9 @@ with the approved `git pull --ff-only` procedure:
 ```
 
 Omit `-MonitorIp` to enter it interactively, or add `-WhatIf` for a read-only
-plan. The wizard inventories first, verifies TCP/8765, requires
-`RESET-RUNNER`, removes only the managed Runner observability state, and pauses
+plan. The wizard inventories first, verifies TCP/8765, checks Python and pip,
+and installs/verifies pywin32 when needed before requiring `RESET-RUNNER`.
+It then removes only the managed Runner observability state, and pauses
 with `status=WAITING_FOR_MONITOR_FILES` for the operator to copy the new
 `monitor-token.txt` and public `monitor.crt` through the approved remote-control
 channel. It never copies `monitor.key`, prints token contents, deletes
@@ -805,6 +815,9 @@ raw exception message, stack trace, absolute path, or token value.
 | Symptom / diagnostic | Likely cause | What to do |
 | --- | --- | --- |
 | `unsupported_python_version` | The host's Python interpreter is older than 3.11 | Install/upgrade Python 3.11+ on the target host and re-run |
+| `python_not_found` | No Python 3.11+ interpreter was discovered | Install Python 3.11+ with pip from the approved software channel, then re-run the Runner wizard |
+| `python_pip_unavailable` | The selected interpreter does not provide pip | Install/repair Python with pip from the approved software channel; the wizard has not reset Runner state |
+| `windows_service_runtime_install_failed` | pywin32 installation failed or its service imports still fail | Check approved pip-source connectivity/configuration and rerun; the wizard stops before `RESET-RUNNER` |
 | `tls_certificate_file_missing` | No cert file configured, or the configured path does not exist / is empty | Confirm `-TlsCertPath` points at a real, non-empty file. Issuing/trusting the certificate itself is issue #6's job, not this script's |
 | `tls_certificate_invalid` | `-TlsKeyPath` was also supplied, and the cert/key pair could not be loaded into a real `SSLContext` -- the key file is missing/empty, the cert content is malformed, or the key does not match the certificate | Confirm `-TlsCertPath`/`-TlsKeyPath` point at a real, matching PEM certificate and private key pair (the same files you intend to pass to `serve --tls-cert`/`--tls-key`). This check never reports the file contents or which specific rule failed |
 | `auth_credential_file_missing` | No credential file configured, or the configured path does not exist / is empty | Confirm `-AuthTokenPath` points at a real, non-empty file. This check never reads or reports the token's value |
