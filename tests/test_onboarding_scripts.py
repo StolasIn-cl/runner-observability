@@ -436,6 +436,42 @@ class MonitorRoleScriptStaticContractTests(unittest.TestCase):
         self.assertIn('Operation "Troubleshooting"', self.script_text)
         self.assertIn('Role "Monitor"', self.script_text)
 
+    def test_monitor_clean_rebuild_preflights_confirmed_runner_ips_before_reset(self) -> None:
+        monitor_rebuild = self.readme_text.split("## 1. 從 0 重建 Monitor", 1)[1].split(
+            "## 2. 從 0 重建 Runner", 1
+        )[0]
+        preflight = monitor_rebuild.index("Invoke-MonitorAction -Action Preflight")
+        reset_prompt = monitor_rebuild.index("RESET-MONITOR")
+
+        self.assertIn("Read-Host 'Confirmed Runner IPv4", monitor_rebuild)
+        self.assertIn("RunnerAddress = $runnerIps", monitor_rebuild)
+        self.assertNotIn("<CONFIRMED_RUNNER_IPV4>", monitor_rebuild)
+        self.assertIn("if ($LASTEXITCODE -ne 0)", monitor_rebuild)
+        self.assertLess(preflight, reset_prompt)
+        self.assertLess(preflight, monitor_rebuild.index("Invoke-MonitorAction -Action Uninstall"))
+
+    @unittest.skipUnless(
+        Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe").is_file(),
+        "Windows PowerShell required",
+    )
+    def test_monitor_readme_powershell_snippets_parse(self) -> None:
+        monitor_rebuild = self.readme_text.split("## 1. 從 0 重建 Monitor", 1)[1].split(
+            "## 2. 從 0 重建 Runner", 1
+        )[0]
+        snippets = re.findall(r"(?s)```powershell\s*(.*?)\s*```", monitor_rebuild)
+        self.assertGreaterEqual(len(snippets), 2)
+
+        for index, snippet in enumerate(snippets):
+            with self.subTest(snippet=index), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "monitor-readme.ps1"
+                path.write_text(snippet, encoding="utf-8")
+                completed = run_powershell(
+                    "$tokens = $null; $errors = $null; "
+                    + f"[void][System.Management.Automation.Language.Parser]::ParseFile({powershell_literal(path)}, [ref]$tokens, [ref]$errors); "
+                    + "if ($errors.Count -gt 0) { throw $errors[0].Message }"
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr + completed.stdout)
+
     def test_monitor_certificate_modes_are_explicit_and_self_signed_is_native(self) -> None:
         for mode in ("PublicCa", "PrivateCa", "SelfSigned", "Existing"):
             with self.subTest(mode=mode):
