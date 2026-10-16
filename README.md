@@ -82,12 +82,24 @@ if ($runnerIps.Count -eq 0) {
     throw 'Enter at least one confirmed Runner IPv4 before continuing'
 }
 
+$pythonDetection = & $monitorScript -Action DetectPython
+if ($LASTEXITCODE -ne 0) {
+    throw 'No service-accessible machine-wide Python 3.11+ was found. Ask your administrator to provision one in a shared location and register it for the machine, then rerun this step.'
+}
+$pythonPath = ($pythonDetection | ConvertFrom-Json).PythonPath
+Write-Host "Using machine-wide Python: $pythonPath"
+& $pythonPath -m pip install --quiet --disable-pip-version-check --no-input '.[windows-service]'
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not install the Monitor package and pywin32 from the configured pip source'
+}
+
 $commonArguments = @{
     ConfigPath = $config
     DatabasePath = $database
     SecretRoot = $secretRoot
 }
 $installArguments = $commonArguments + @{
+    PythonPath = $pythonPath
     CertificateMode = 'SelfSigned'
     AllowDevSelfSigned = $true
     TrustSelfSignedCertificate = $true
@@ -137,9 +149,15 @@ Invoke-MonitorAction -Action Install -Arguments $installArguments
 Invoke-MonitorAction -Action Start -Arguments $commonArguments
 ```
 
-Monitor Host 必須先從公司核准來源安裝 Python 3.11+ 與 pywin32；Monitor 安裝腳本
-不會自行安裝這些依賴。若回報 `python_not_found` 或 `python_import_failed`，請先
-補齊 Monitor Host 的依賴再重跑；不要把固定 Python path 寫進 README。`SelfSigned` 僅限核准的測試環境；正式環境
+Monitor Host 必須先從公司核准來源部署 service-accessible 的 machine-wide Python 3.11+。
+腳本會從 HKLM 的 Python 安裝登錄與 Windows 系統 PATH 自動選用最新合格版本，略過
+WindowsApps 與任何使用者目錄。新版 Python Install Manager 的 runtime 是 per-user，不能
+因為管理器本身已安裝就視為服務可用。上述流程再用偵測到的 Python 從 repo 根目錄安裝
+`.[windows-service]`，包含 Monitor 套件與 pywin32。找不到時請管理員把 Python 部署到共用
+位置並登錄到系統，再重新執行；也請先將 pip 設定到公司核准的套件來源。服務以 `LocalService` 執行，因此不能使用
+`WindowsApps` alias 或使用者 `AppData` 下的 Python。Preflight 會在隔離匯入模式檢查
+已安裝的套件與 Windows service modules；若回報 `python_runtime_not_service_accessible`
+或 `python_import_failed`，流程會在解除服務或刪檔前停止。`SelfSigned` 僅限核准的測試環境；正式環境
 應改用既有受信任的 certificate pair。Monitor 產生的 `monitor-token.txt`、
 `monitor.crt` 與 `monitor.key` 留在 Monitor Host，只有前兩者稍後會傳到 Runner。
 
